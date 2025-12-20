@@ -21,15 +21,43 @@
         const list = document.getElementById('job-list');
 
         socket.on('job-update', (job) => {
+            console.log("Update received:", job); // Debug log
+
+            // Remove existing card if it exists
+            const existing = document.getElementById(`job-${job.id}`);
+            if (existing) existing.remove();
+
             const div = document.createElement('div');
+            div.id = `job-${job.id}`;
             div.className = 'card';
+            
+            // Show Replay button ONLY if Failed
+            const isFailed = job.status.toLowerCase().includes('failed');
+            const replayBtn = isFailed 
+                ? `<button onclick="triggerReplay('${job.id}')" style="background:#e53e3e; color:white; border:none; padding:8px 12px; border-radius:4px; cursor:pointer; font-weight:bold;">↺ Replay</button>` 
+                : '';
+
             div.innerHTML = `
-                <div><strong>Job ID:</strong> ${job.id}</div>
-                <div>Status: <span class="status ${job.status.toLowerCase()}">${job.status}</span></div>
-                <div>Time: ${new Date().toLocaleTimeString()}</div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <strong>Job ID: ${job.id}</strong>
+                    ${replayBtn}
+                </div>
+                <div style="margin-top:5px;">Status: <span class="status ${job.status.toLowerCase()}">${job.status}</span></div>
+                <div style="color:#666; font-size:0.9em;">Time: ${new Date().toLocaleTimeString()}</div>
             `;
-            list.prepend(div); // Add new jobs to the top
+            list.prepend(div);
         });
+
+        async function triggerReplay(id) {
+            alert(`Replaying Job: ${id}`); // Visual confirmation
+            await fetch(`/api/events/${id}/replay`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'x-api-key': 'architect-secret-123' 
+                }
+            });
+        }
     </script>
 </body>
 </html>
