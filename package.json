@@ -15,7 +15,8 @@
     "bullmq": "^5.66.2",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "ioredis": "^5.8.2"
+    "ioredis": "^5.8.2",
+    "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

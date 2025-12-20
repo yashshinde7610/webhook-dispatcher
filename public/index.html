@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Webhook Dashboard 🚀</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
+        .card { background: white; padding: 15px; margin-bottom: 10px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .status { font-weight: bold; }
+        .completed { color: green; }
+        .failed { color: red; }
+        .pending { color: orange; }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Job Monitor</h1>
+    <div id="job-list">Waiting for jobs...</div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const list = document.getElementById('job-list');
+
+        socket.on('job-update', (job) => {
+            const div = document.createElement('div');
+            div.className = 'card';
+            div.innerHTML = `
+                <div><strong>Job ID:</strong> ${job.id}</div>
+                <div>Status: <span class="status ${job.status.toLowerCase()}">${job.status}</span></div>
+                <div>Time: ${new Date().toLocaleTimeString()}</div>
+            `;
+            list.prepend(div); // Add new jobs to the top
+        });
+    </script>
+</body>
+</html>
