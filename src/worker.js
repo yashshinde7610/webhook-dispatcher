@@ -1,27 +1,33 @@
 // src/worker.js (The "Algorithm" Version)
-const { Worker, Queue } = require('bullmq'); // Import Queue to re-add jobs
+require('dotenv').config(); // <--- 1. LOAD ENV VARIABLES
+const { Worker, Queue } = require('bullmq'); 
 const mongoose = require('mongoose');
 const axios = require('axios');
 const crypto = require('crypto');
-const Event = require('./models/Event'); // Adjust path if needed
+const Event = require('./models/Event'); 
 
-
-// Redis Connection
-const connection = { host: '127.0.0.1', port: 6379 };
+// 2. USE ENV VARIABLES FOR REDIS
+const connection = { 
+    host: process.env.REDIS_HOST || '127.0.0.1', 
+    port: process.env.REDIS_PORT || 6379 
+};
 
 // Create a Queue instance so we can manually re-add jobs
 const webhookQueue = new Queue('webhook-queue', { connection });
 
 // Helper: HMAC Signature
 function createHmacSignature(payload) {
-    const secret = 'my_super_secret_webhook_key';
+    // 3. USE ENV VARIABLE FOR SECRET
+    const secret = process.env.WEBHOOK_SECRET;
+    // Security Check: Fail if secret is missing
+    if (!secret) throw new Error('❌ WEBHOOK_SECRET is missing in .env file');
+    
     return crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
 }
 
 // Helper: Calculate Custom Backoff
 function calculateBackoff(attempts, status) {
     if (status === 429) {
-        // This log is how you know the algorithm recognized the Rate Limit
         console.log('⏳ ALGORITHM: Hit Rate Limit (429). Delaying 60s...'); 
         return 60000; 
     }
@@ -42,10 +48,10 @@ const worker = new Worker('webhook-queue', async (job) => {
 
     try {
         // --- CHAOS MONKEY: PERMANENT FAILURE MODE ---
-        // We throw this unconditionally to ensure it fails 5 times in a row.
+        // Uncomment the line below to simulate a crash
         // throw { response: { status: 500 }, message: "Simulated Server Crash" }; 
 
-        // 1. Sign & Send (This code never runs during this test)
+        // 1. Sign & Send
         const signature = createHmacSignature(job.data.payload);
         const response = await axios.post(job.data.url, job.data.payload, {
             headers: { 'X-Signature': signature, 'Content-Type': 'application/json' }
@@ -61,7 +67,6 @@ const worker = new Worker('webhook-queue', async (job) => {
         }
         return { status: 'COMPLETED', dbId: dbId };
     } catch (error) {
-        // ... (Keep the rest of your catch block exactly as it is)
         const status = error.response ? error.response.status : 500; // Default to 500 if network fails
         console.error(`❌ Failed with Status: ${status}`);
 
@@ -101,7 +106,7 @@ const worker = new Worker('webhook-queue', async (job) => {
             throw new Error(`Final Failure: Job reached max attempts (${currentAttempt}).`);
         }
 
-// Rule C: Schedule the Retry
+        // Rule C: Schedule the Retry
         const delay = calculateBackoff(currentAttempt, status);
         
         // --- SAFE DB UPDATE ---
@@ -139,8 +144,7 @@ const worker = new Worker('webhook-queue', async (job) => {
     }
 }, { connection });
 
-// --- ADD THIS TO THE VERY BOTTOM OF src/worker.js ---
-
-mongoose.connect('mongodb://127.0.0.1:27017/webhook-db')
+// 4. USE ENV VARIABLE FOR MONGO URI
+mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db')
     .then(() => console.log('✅ Worker connected to MongoDB'))
     .catch(err => console.error('❌ MongoDB connection error:', err));
