@@ -23,14 +23,57 @@ const queueEvents = new QueueEvents('webhook-queue', {
     connection: { host: '127.0.0.1', port: 6379 }
 });
 
-queueEvents.on('completed', ({ jobId }) => {
-    console.log(`⚡ Event: Job ${jobId} completed!`);
-    io.emit('job-update', { id: jobId, status: 'Completed', timestamp: new Date() });
+// REPLACE THE OLD 'completed' LISTENER WITH THIS:
+
+// REPLACE your 'completed' listener with this DEBUG version:
+
+queueEvents.on('completed', ({ jobId, returnvalue }) => {
+    // Debug Log: What exactly did the worker send us?
+    console.log(`🔍 DEBUG Raw Return Value for Job ${jobId}:`, returnvalue);
+
+    let status = 'Completed';
+    let realId = jobId;
+
+    if (returnvalue) {
+        try {
+            // Handle if it's a string (JSON) or an object
+            const result = typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue;
+            
+            console.log("🔍 DEBUG Parsed Result:", result); // See what we parsed
+
+            if (result.status) status = result.status;
+            if (result.dbId) realId = result.dbId;
+        } catch (e) {
+            console.error("⚠️ Server failed to parse return value:", e.message);
+        }
+    } else {
+        console.log("⚠️ DEBUG: returnvalue was empty/null. Defaulting to Completed.");
+    }
+
+    console.log(`⚡ Event: Job ${realId} is marked as ${status}!`);
+    
+    io.emit('job-update', { id: realId, status: status, timestamp: new Date() });
 });
 
-queueEvents.on('failed', ({ jobId, failedReason }) => {
-    console.log(`⚡ Event: Job ${jobId} failed!`);
-    io.emit('job-update', { id: jobId, status: 'Failed', reason: failedReason });
+// REPLACE your old 'failed' listener with this SMARTER version:
+
+queueEvents.on('failed', async ({ jobId, failedReason }) => {
+    // 1. Try to find the job details to get the REAL DB ID
+    let realId = jobId;
+    
+    try {
+        const job = await myQueue.getJob(jobId);
+        if (job && job.data.dbId) {
+            realId = job.data.dbId; // Found the parent ID!
+        }
+    } catch (e) {
+        console.error("⚠️ Could not fetch failed job details");
+    }
+
+    console.log(`⚡ Event: Job ${realId} failed!`);
+    
+    // 2. Update the ORIGINAL card to Failed (Red)
+    io.emit('job-update', { id: realId, status: 'Failed', reason: failedReason });
 });
 
 // --- SECURITY MIDDLEWARE ---

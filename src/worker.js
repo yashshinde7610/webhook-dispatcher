@@ -41,15 +41,11 @@ const worker = new Worker('webhook-queue', async (job) => {
     const currentAttempt = job.data.attemptCount || 1;
 
     try {
-        // --- CHAOS MONKEY (Optional: Keep it for testing 500s) ---
-        // if (Math.random() < 0.5) throw { response: { status: 500 } }; 
-        if ((job.data.attemptCount || 1) === 1) {
-        throw { response: { status: 429 }, message: "Too Many Requests (demo)" };
-}
+        // --- CHAOS MONKEY: PERMANENT FAILURE MODE ---
+        // We throw this unconditionally to ensure it fails 5 times in a row.
+        // throw { response: { status: 500 }, message: "Simulated Server Crash" }; 
 
-
-
-        // 1. Sign & Send
+        // 1. Sign & Send (This code never runs during this test)
         const signature = createHmacSignature(job.data.payload);
         const response = await axios.post(job.data.url, job.data.payload, {
             headers: { 'X-Signature': signature, 'Content-Type': 'application/json' }
@@ -57,15 +53,15 @@ const worker = new Worker('webhook-queue', async (job) => {
 
         console.log(`✅ Success! Status: ${response.status}`);
         
-        // 2. Update DB
         if (dbId) {
             await Event.findByIdAndUpdate(dbId, { 
                 status: 'COMPLETED',
                 $push: { logs: { attempt: currentAttempt, status: response.status, response: 'Success' } }
             });
         }
-
+        return { status: 'COMPLETED', dbId: dbId };
     } catch (error) {
+        // ... (Keep the rest of your catch block exactly as it is)
         const status = error.response ? error.response.status : 500; // Default to 500 if network fails
         console.error(`❌ Failed with Status: ${status}`);
 
@@ -85,26 +81,66 @@ const worker = new Worker('webhook-queue', async (job) => {
             return; // Stop here.
         }
 
-        // Rule B: Max Retries (e.g., 5)
+        // Rule B: Max Retries (DLQ Logic)
         if (currentAttempt >= 5) {
-            console.log('💀 Max retries reached. Moving to DLQ.');
-            if (dbId) await Event.findByIdAndUpdate(dbId, { status: 'FAILED' });
-            return; // Stop here.
+            console.log(`💀 DLQ: Job ${job.id} has failed 5 times. Killing it.`);
+            
+            // 1. Update MongoDB (So your Dashboard turns Red)
+            if (dbId) {
+                await Event.findByIdAndUpdate(dbId, { 
+                    status: 'FAILED', 
+                    $push: { logs: { 
+                        attempt: currentAttempt, 
+                        status: 'DLQ', 
+                        response: 'Max retries reached. Job moved to Failed set.' 
+                    }}
+                });
+            }
+
+            // 2. Throw Error (So Redis moves it to "Failed" list)
+            throw new Error(`Final Failure: Job reached max attempts (${currentAttempt}).`);
         }
 
-        // Rule C: Schedule the Retry
+// Rule C: Schedule the Retry
         const delay = calculateBackoff(currentAttempt, status);
         
-        // Re-add to Queue with new delay
+        // --- SAFE DB UPDATE ---
+        if (dbId) {
+            try {
+                console.log(`🔹 UI UPDATE: Marking Job ${dbId} as RETRYING`);
+                
+                await Event.findByIdAndUpdate(dbId, { 
+                    status: 'RETRYING', 
+                    $push: { logs: { 
+                        attempt: currentAttempt, 
+                        status: status, 
+                        response: `Failed with ${status}. Retrying in ${delay/1000}s...`
+                    }}
+                });
+            } catch (dbError) {
+                console.error("⚠️ Database update failed, but proceeding with retry:", dbError.message);
+            }
+        }
+        // -----------------------
+
+        // Re-add to Queue
         await webhookQueue.add('webhook-job', {
             ...job.data,
             attemptCount: currentAttempt + 1 
         }, {
             delay: delay,
-            // FIX: Using a random suffix ensures Redis NEVER blocks this retry
             jobId: `retry-${Date.now()}-${Math.random().toString(36).substring(7)}` 
         });
         
         console.log(`🔄 ALGORITHM: Retry scheduled in ${delay / 1000}s...`);
+        
+        // (NO THROW HERE) - Worker finishes "successfully", leaving DB status as "RETRYING"
+        return { status: 'RETRYING', dbId: dbId };
     }
 }, { connection });
+
+// --- ADD THIS TO THE VERY BOTTOM OF src/worker.js ---
+
+mongoose.connect('mongodb://127.0.0.1:27017/webhook-db')
+    .then(() => console.log('✅ Worker connected to MongoDB'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
