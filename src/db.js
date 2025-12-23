@@ -1,17 +1,16 @@
 // src/db.js
 const mongoose = require('mongoose');
 
-// Docker maps internal port 27017 to localhost:27017
-const MONGO_URI = 'mongodb://127.0.0.1:27017/webhook-dispatcher';
-
-async function connectDB() {
+const connectDB = async () => {
     try {
-        await mongoose.connect(MONGO_URI);
-        console.log('📦 MongoDB Connected Successfully');
+        // 👇 UPDATED: Uses Docker Env Var OR Localhost fallback
+        const conn = await mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db');
+        
+        console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     } catch (error) {
-        console.error('❌ MongoDB Connection Failed:', error);
+        console.error(`❌ Error: ${error.message}`);
         process.exit(1);
     }
-}
+};
 
 module.exports = connectDB;

@@ -1,20 +1,30 @@
 // src/queue.js
 const { Queue } = require('bullmq');
+const connection = require('./redis'); // <--- Use your shared Redis connection
 
-const connection = { host: '127.0.0.1', port: 6379 };
 const myQueue = new Queue('webhook-queue', { connection });
 
 async function addToQueue(data) {
     return await myQueue.add('webhook-job', data, {
-        // 1. SYNC ID: Keep the DB ID sync so Dashboard works
+        // --- ⚡ IMPORTANT CHANGES ---
+        
+        // 1. Enable Retries
+        // We now rely on BullMQ to handle the "Try again later" logic
+        attempts: 5, 
+        
+        // 2. Exponential Backoff
+        // If it fails, wait 1s, then 2s, then 4s, etc.
+        backoff: {
+            type: 'exponential',
+            delay: 1000 
+        },
+
+        // 3. Keep the DB ID as the Job ID
+        // This links the Redis job directly to your Mongo record
         jobId: data.dbId ? data.dbId.toString() : undefined,
         
-        // 2. DISABLE AUTO-RETRY: We set this to 1 because we are writing
-        //    our own custom retry algorithm in the worker.
-        attempts: 1, 
-        
         removeOnComplete: true,
-        removeOnFail: false
+        removeOnFail: false 
     });
 }
 

@@ -1,10 +1,53 @@
 version: '3.8'
+
 services:
+  # 🤫 REDIS (Muted)
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
+    logging:
+      driver: "none" # 🔇 This effectively turns off logs for this container
+
+  # 🤫 MONGO (Muted)
   mongo:
     image: mongo:latest
     ports:
       - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    logging:
+      driver: "none" # 🔇 This effectively turns off logs for this container
+
+  # 🗣️ API (Loud & Clear)
+  api:
+    build: .
+    command: node server.js
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - MONGO_URI=mongodb://mongo:27017/webhook-db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WEBHOOK_SECRET=my_super_secret_key_123
+      - API_KEY=architect-secret-123 
+    depends_on:
+      - mongo
+      - redis
+
+  # 🗣️ WORKER (Loud & Clear)
+  worker:
+    build: .
+    command: node src/worker.js
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/webhook-db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WEBHOOK_SECRET=my_super_secret_key_123
+    depends_on:
+      - mongo
+      - redis
+
+volumes:
+  mongo-data:

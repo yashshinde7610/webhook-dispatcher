@@ -2,29 +2,38 @@
 const mongoose = require('mongoose');
 
 const EventSchema = new mongoose.Schema({
-    // Security: Who sent this?
-    source: { type: String, required: true }, // e.g., "API_KEY_...123"
-    
-    // The Payload
+    // --- EXISTING FIELDS ---
+    source: { type: String, required: true },
     payload: { type: Object, required: true },
     targetUrl: { type: String, required: true },
-
-    // The State Machine
+    
+    // --- UPDATED STATE MACHINE ---
     status: { 
         type: String, 
-        enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'DEAD'], 
+        // Added 'FAILED_PERMANENT' so we can distinguish "Dead" from "Retrying"
+        enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'FAILED_PERMANENT','DEAD'], 
         default: 'PENDING' 
     },
 
-    // Observability: Track every single attempt
+    // --- NEW FIELDS (For Smart Retries) ---
+    failureType: { 
+        type: String, 
+        enum: ['TRANSIENT', 'PERMANENT', null], // Is it a 500 (Retry) or 404 (Stop)?
+        default: null 
+    },
+    finalHttpStatus: Number, // Stores the last status code (e.g., 404 or 500)
+    attemptCount: { type: Number, default: 0 },
+    lastError: String,       // Readable error message (e.g., "Connection Timeout")
+    // ---------------------------------------
+
+    // Observability (Keep this! It's great for history)
     logs: [{
         attempt: Number,
-        status: Number, // HTTP Status (200, 404, 500)
+        status: Number,
         response: String,
         timestamp: { type: Date, default: Date.now }
     }],
 
-    // Timestamps
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
 });
