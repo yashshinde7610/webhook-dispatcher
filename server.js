@@ -1,6 +1,7 @@
 // server.js
 const connectDB = require('./src/db');
 connectDB(); // <--- Connects to Mongo immediately
+const redis = require('./src/redis'); // <--- 1. IMPORT REDIS
 
 require('dotenv').config();
 const Event = require('./src/models/Event'); // Import the DB Model
@@ -23,7 +24,6 @@ const queueEvents = new QueueEvents('webhook-queue', {
     connection: { host: '127.0.0.1', port: 6379 }
 });
 
-// REPLACE THE OLD 'completed' LISTENER WITH THIS:
 
 // REPLACE your 'completed' listener with this DEBUG version:
 
@@ -84,44 +84,74 @@ const validateApiKey = (req, res, next) => {
     }
     next();
 };
-
-// --- API ROUTE (Day 7: Database Version) ---
+// --- API ROUTE (With Idempotency & Override Flag) ---
 app.post('/api/events', validateApiKey, async (req, res) => {
-    try {
-        const jobData = req.body;
+    // 1. EXTRACT HEADERS
+    console.log("🔍 DEBUG HEADERS:", req.headers); 
+    const idempotencyKey = req.headers['idempotency-key'];
+    const forceRetry = req.headers['x-force-retry'] === 'true'; // <--- NEW: Check for override flag
+    const jobData = req.body;
 
-        // 1. DATABASE: Create the record in MongoDB (Status: PENDING)
-        // This is the "Paper Trail" for your resume
+    try {
+        // --- 🛡️ IDEMPOTENCY CHECK (The Guard) ---
+        // Only check for duplicates if the user DID NOT ask to force it
+        if (idempotencyKey && !forceRetry) { // <--- CHANGED: Bypass if forceRetry is true
+            const key = `idempotency:${idempotencyKey}`;
+            const exists = await redis.get(key);
+
+            if (exists) {
+                console.log(`🛑 Idempotency Hit: Duplicate Key ${idempotencyKey} blocked.`);
+                return res.status(409).json({ 
+                    error: 'Conflict', 
+                    message: 'This event has already been processed.', 
+                    originalJobId: JSON.parse(exists).id 
+                });
+            }
+        }
+
+        // --- NORMAL PROCESSING START ---
+        
+        // 2. DATABASE: Create the record in MongoDB
         const eventLog = new Event({
             source: 'API_KEY_USER', 
             payload: jobData,
             targetUrl: jobData.url,
             status: 'PENDING'
         });
-        await eventLog.save(); // Saves to the database
+        await eventLog.save(); 
         console.log(`💾 Job saved to DB. ID: ${eventLog._id}`);
 
-        // 2. QUEUE: Pass the Database ID to the Worker
-        // We add 'dbId' so the worker knows which record to update later
+        // 3. QUEUE: Push to BullMQ
         await addToQueue({ 
             ...jobData, 
             dbId: eventLog._id 
         });
+
+        // --- 💾 SAVE IDEMPOTENCY KEY ---
+        // We update the key even if it's a forced retry (extending the lock)
+        if (idempotencyKey) {
+            await redis.set(
+                `idempotency:${idempotencyKey}`, 
+                JSON.stringify({ id: eventLog._id }), 
+                'EX', 
+                86400
+            );
+        }
         
-        // 3. REAL-TIME: Notify Frontend
+        // 4. REAL-TIME: Notify Frontend
         io.emit('job-update', { id: eventLog._id, status: 'Pending', data: jobData });
         
         res.status(202).json({ 
             status: 'accepted', 
-            message: 'Job pushed to queue',
+            // Nice touch: Tell the user if it was a forced retry
+            message: forceRetry ? 'Job forced into queue' : 'Job pushed to queue', 
             id: eventLog._id 
         });
+
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
-// ... (Your /api/events route is above here) ...
-
 // --- PASTE THE NEW REPLAY ROUTE HERE ---
 app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
     try {
