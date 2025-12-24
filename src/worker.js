@@ -35,9 +35,16 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db'
 
 // --- 👷 WORKER PROCESSOR ---
 const worker = new Worker('webhook-queue', async (job) => {
-    const { url, payload, dbId, traceId } = job.data;
+    const { url, payload, dbId, traceId, deliverySemantics } = job.data;
     const tid = traceId || 'NO-TRACE-ID'; 
     const currentAttempt = job.attemptsMade + 1;
+
+    // We explicitly verify that we are running in "Unordered" mode.
+    if (deliverySemantics !== 'AT_LEAST_ONCE_UNORDERED') {
+        console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown delivery semantics: ${deliverySemantics}`);
+        // In a strict financial system, we might even throw an error here.
+        // For now, a warning proves you are watching the system behavior.
+    }
 
     // 👇 1. ATOMIC IDEMPOTENCY CHECK (The "Senior" Logic)
     // We attempt to set a lock key. 'NX' means "Only set if Not Exists".

@@ -2,40 +2,54 @@
 const mongoose = require('mongoose');
 
 const EventSchema = new mongoose.Schema({
-    // --- EXISTING FIELDS ---
-    source: { type: String, required: true },
+    // --- 🔍 OBSERVABILITY (New) ---
+    // The "Digital Thread" to track this request across the entire system
+    traceId: { 
+        type: String, 
+        required: true, 
+        index: true 
+    },
+
+    // --- 📜 CONTRACT (New) ---
+    // Explicitly stating our architectural trade-off: 
+    // "We guarantee delivery, but NOT order."
+    deliverySemantics: { 
+        type: String, 
+        default: 'AT_LEAST_ONCE_UNORDERED',
+        immutable: true 
+    },
+
+    // --- CORE DATA ---
+    source: { type: String, default: 'API' }, // Defaulted to API if not sent
     payload: { type: Object, required: true },
-    targetUrl: { type: String, required: true },
+    url: { type: String, required: true },    // ⚠️ Renamed from 'targetUrl' to match worker.js
     
-    // --- UPDATED STATE MACHINE ---
+    // --- STATE MACHINE ---
     status: { 
         type: String, 
-        // Added 'FAILED_PERMANENT' so we can distinguish "Dead" from "Retrying"
-        enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'FAILED_PERMANENT','DEAD'], 
+        enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'FAILED_PERMANENT', 'DEAD'], 
         default: 'PENDING' 
     },
 
-    // --- NEW FIELDS (For Smart Retries) ---
+    // --- FAILURE HANDLING ---
     failureType: { 
         type: String, 
-        enum: ['TRANSIENT', 'PERMANENT', null], // Is it a 500 (Retry) or 404 (Stop)?
+        enum: ['TRANSIENT', 'PERMANENT', null], 
         default: null 
     },
-    finalHttpStatus: Number, // Stores the last status code (e.g., 404 or 500)
+    finalHttpStatus: Number,
     attemptCount: { type: Number, default: 0 },
-    lastError: String,       // Readable error message (e.g., "Connection Timeout")
-    // ---------------------------------------
+    lastError: String,
 
-    // Observability (Keep this! It's great for history)
+    // --- LOGS ---
     logs: [{
         attempt: Number,
         status: Number,
         response: String,
         timestamp: { type: Date, default: Date.now }
-    }],
-
-    createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
+    }]
+}, { 
+    timestamps: true // Automatically manages createdAt and updatedAt
 });
 
 module.exports = mongoose.model('Event', EventSchema);

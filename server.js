@@ -101,6 +101,18 @@ app.post('/api/events', validateApiKey, async (req, res) => {
     // 1. GENERATE TRACE ID (The "Digital Thread")
     const traceId = crypto.randomUUID(); // <--- 2. GENERATE ID
 
+    // If Redis is down, we MUST NOT accept the job. 
+    // Otherwise, we have data in Mongo but nothing in the Queue (Zombie Data).
+    if (redis.status !== 'ready') {
+        console.error(`[Trace: ${traceId}] 🛑 Critical: Redis is ${redis.status}. Rejecting request.`);
+        return res.status(503).json({ 
+            error: 'Service Unavailable', 
+            message: 'Ingestion paused due to infrastructure outage.',
+            code: 'INGESTION_PAUSED_REDIS_UNAVAILABLE', // <--- The specific log you wanted
+            traceId
+        });
+    }
+
     // 2. EXTRACT HEADERS & LOGGING
     // We now include the traceId in the log so we can find this exact request later
     console.log(`[Trace: ${traceId}] 🔍 Ingress: New Request Received`); 
@@ -130,10 +142,12 @@ app.post('/api/events', validateApiKey, async (req, res) => {
         
         // 3. DATABASE
         const eventLog = new Event({
+            traceId: traceId,
             source: 'API_KEY_USER', 
             payload: jobData,
-            targetUrl: jobData.url,
+            url: jobData.url,
             status: 'PENDING',
+            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
             // traceId: traceId // (Optional: Add this to schema if you want DB searching)
         });
         await eventLog.save(); 
@@ -144,7 +158,8 @@ app.post('/api/events', validateApiKey, async (req, res) => {
         await addToQueue({ 
             ...jobData, 
             dbId: eventLog._id,
-            traceId // <--- 3. PASS THE TORCH (Send ID to Worker)
+            traceId ,
+            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'// <--- 3. PASS THE TORCH (Send ID to Worker)
         });
 
         // --- 💾 SAVE IDEMPOTENCY KEY ---
