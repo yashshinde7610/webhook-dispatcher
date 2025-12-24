@@ -144,25 +144,31 @@ const worker = new Worker('webhook-queue', async (job) => {
     }
 }, {
     connection: redis,
-    concurrency: 10,
+    concurrency: 50,
     limiter: { 
-        max: 10,
+        max: 50,
         duration: 1000, 
     }
 });
 
-// --- 💀 DEATH LISTENER ---
+
+// --- 💀 DEATH LISTENER (DLQ Handler) ---
 worker.on('failed', async (job, err) => {
+    // Check if the job has exhausted all attempts
     if (job && job.attemptsMade >= job.opts.attempts) {
         const tid = job.data.traceId || 'NO-TRACE-ID';
-        console.log(`[Trace: ${tid}] 💀 Job ${job.id} has DIED.`);
         
+        console.log(chalk.red.bold(`[Trace: ${tid}] 💀 Job ${job.id} has DIED.`));
+        console.log(chalk.red(`   ↳ 🗑️  Moved to Dead Letter Queue (DLQ) in Redis`));
+        console.log(chalk.gray(`   ↳ Reason: ${err.message}`));
+
+        // Update Mongo to reflect this final state
         const dbId = job.data.dbId;
         if (dbId) {
             await Event.findByIdAndUpdate(dbId, {
-                status: 'DEAD',
-                failureType: 'TRANSIENT',
-                lastError: `Given up: ${err.message}`
+                status: 'DEAD', // <--- This confirms it's in your DLQ view
+                failureType: 'PERMANENT',
+                lastError: `Max Retries Reached: ${err.message}`
             });
         }
     }

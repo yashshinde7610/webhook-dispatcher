@@ -1,26 +1,28 @@
 // server.js
 const connectDB = require('./src/db');
-connectDB(); // <--- Connects to Mongo immediately
-const redis = require('./src/redis'); // <--- 1. IMPORT REDIS
-const crypto = require('crypto'); // Built-in Node.js module
+connectDB(); 
+const redis = require('./src/redis'); 
+const crypto = require('crypto'); 
+const chalk = require('chalk');   
+const figlet = require('figlet'); 
 
 require('dotenv').config();
-const Event = require('./src/models/Event'); // Import the DB Model
+const Event = require('./src/models/Event'); 
 const express = require('express');
-const http = require('http'); // New: Required for WebSockets
-const { Server } = require('socket.io'); // New: The WebSocket Library
+const http = require('http'); 
+const { Server } = require('socket.io'); 
 const { addToQueue, myQueue } = require('./src/queue');
-const { QueueEvents } = require('bullmq'); // New: To spy on the queue
+const { QueueEvents } = require('bullmq'); 
+const { applyFieldMask } = require('./src/utils/fieldMask'); 
 
 const app = express();
-const server = http.createServer(app); // Wrap Express
-const io = new Server(server); // Attach Socket.io to the server
+const server = http.createServer(app); 
+const io = new Server(server); 
 
 app.use(express.json());
-app.use(express.static('public')); // Serve the dashboard file (we will create this next)
+app.use(express.static('public')); 
 
-// --- QUEUE LISTENER (The Spy) ---
-// This listens to Redis for job updates from the Worker
+// --- 🎧 QUEUE LISTENER ---
 const queueEvents = new QueueEvents('webhook-queue', {
     connection: { 
         host: process.env.REDIS_HOST || '127.0.0.1', 
@@ -28,36 +30,22 @@ const queueEvents = new QueueEvents('webhook-queue', {
     }
 });
 
-// REPLACE your 'completed' listener with this DEBUG version:
-// server.js - Find the 'queueEvents.on' block and replace it with this:
-
 queueEvents.on('completed', ({ jobId, returnvalue }) => {
     let result = {};
-    
-    // 1. SAFE PARSING LOGIC
     if (typeof returnvalue === 'object') {
-        result = returnvalue; // It's already an object (Redis did it for us)
+        result = returnvalue; 
     } else if (typeof returnvalue === 'string') {
         try {
-            // Try to parse it as JSON
             result = JSON.parse(returnvalue);
         } catch (e) {
-            // 💡 THE FIX: If parsing fails, it's just plain text. Don't panic.
-            result = { 
-                status: 'Completed', 
-                response: returnvalue // Save the plain text message here
-            };
+            result = { status: 'Completed', response: returnvalue };
         }
     }
 
-    // 2. EXTRACT ID (Handle both normal jobs and custom DB jobs)
     let realId = jobId;
-    if (result && result.dbId) {
-        realId = result.dbId;
-    }
+    if (result && result.dbId) realId = result.dbId;
 
-    // 3. LOGGING & NOTIFICATION
-    console.log(`⚡ Event: Job ${realId} completed! Response: ${JSON.stringify(result.response || result)}`);
+    console.log(`⚡ Event: Job ${realId} completed!`);
     
     io.emit('job-update', { 
         id: realId, 
@@ -67,28 +55,18 @@ queueEvents.on('completed', ({ jobId, returnvalue }) => {
     });
 });
 
-// REPLACE your old 'failed' listener with this SMARTER version:
-
 queueEvents.on('failed', async ({ jobId, failedReason }) => {
-    // 1. Try to find the job details to get the REAL DB ID
     let realId = jobId;
-    
     try {
         const job = await myQueue.getJob(jobId);
-        if (job && job.data.dbId) {
-            realId = job.data.dbId; // Found the parent ID!
-        }
-    } catch (e) {
-        console.error("⚠️ Could not fetch failed job details");
-    }
+        if (job && job.data.dbId) realId = job.data.dbId; 
+    } catch (e) { console.error("⚠️ Could not fetch failed job details"); }
 
     console.log(`⚡ Event: Job ${realId} failed!`);
-    
-    // 2. Update the ORIGINAL card to Failed (Red)
     io.emit('job-update', { id: realId, status: 'Failed', reason: failedReason });
 });
 
-// --- SECURITY MIDDLEWARE ---
+// --- 🛡️ MIDDLEWARE ---
 const validateApiKey = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
     if (apiKey !== process.env.API_KEY) {
@@ -96,51 +74,57 @@ const validateApiKey = (req, res, next) => {
     }
     next();
 };
-// --- API ROUTE (With Idempotency & Override Flag) ---
-app.post('/api/events', validateApiKey, async (req, res) => {
-    // 1. GENERATE TRACE ID (The "Digital Thread")
-    const traceId = crypto.randomUUID(); // <--- 2. GENERATE ID
 
-    // If Redis is down, we MUST NOT accept the job. 
-    // Otherwise, we have data in Mongo but nothing in the Queue (Zombie Data).
+// --- 📊 SYSTEM HEALTH HEARTBEAT ---
+setInterval(async () => {
+    try {
+        const counts = await myQueue.getJobCounts('waiting', 'active', 'completed', 'failed');
+        io.emit('dashboard-stats', {
+            waiting: counts.waiting,
+            active: counts.active,
+            failed: counts.failed,
+            completed: counts.completed,
+            redisStatus: redis.status 
+        });
+    } catch (err) {
+        // console.error('Metrics Error:', err.message); 
+    }
+}, 2000);
+
+// --- 📥 POST ROUTE (Ingestion) ---
+app.post('/api/events', validateApiKey, async (req, res) => {
+    const traceId = crypto.randomUUID(); 
+
     if (redis.status !== 'ready') {
-        console.error(`[Trace: ${traceId}] 🛑 Critical: Redis is ${redis.status}. Rejecting request.`);
+        console.error(`[Trace: ${traceId}] 🛑 Critical: Redis is ${redis.status}`);
         return res.status(503).json({ 
             error: 'Service Unavailable', 
             message: 'Ingestion paused due to infrastructure outage.',
-            code: 'INGESTION_PAUSED_REDIS_UNAVAILABLE', // <--- The specific log you wanted
+            code: 'INGESTION_PAUSED_REDIS_UNAVAILABLE', 
             traceId
         });
     }
 
-    // 2. EXTRACT HEADERS & LOGGING
-    // We now include the traceId in the log so we can find this exact request later
-    console.log(`[Trace: ${traceId}] 🔍 Ingress: New Request Received`); 
+    console.log(`[Trace: ${traceId}] 🔍 Ingress: New Request`); 
     
     const idempotencyKey = req.headers['idempotency-key'];
     const forceRetry = req.headers['x-force-retry'] === 'true';
     const jobData = req.body;
 
     try {
-        // --- 🛡️ IDEMPOTENCY CHECK ---
         if (idempotencyKey && !forceRetry) {
             const key = `idempotency:${idempotencyKey}`;
             const exists = await redis.get(key);
-
             if (exists) {
-                console.warn(`[Trace: ${traceId}] 🛑 Idempotency: Duplicate Key ${idempotencyKey} blocked.`);
+                console.warn(`[Trace: ${traceId}] 🛑 Idempotency Block`);
                 return res.status(409).json({ 
                     error: 'Conflict', 
-                    message: 'This event has already been processed.', 
-                    originalJobId: JSON.parse(exists).id,
-                    traceId // <--- Return ID so client can debug
+                    message: 'Event already processed', 
+                    traceId 
                 });
             }
         }
 
-        // --- NORMAL PROCESSING ---
-        
-        // 3. DATABASE
         const eventLog = new Event({
             traceId: traceId,
             source: 'API_KEY_USER', 
@@ -148,44 +132,29 @@ app.post('/api/events', validateApiKey, async (req, res) => {
             url: jobData.url,
             status: 'PENDING',
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
-            // traceId: traceId // (Optional: Add this to schema if you want DB searching)
         });
         await eventLog.save(); 
         
-        console.log(`[Trace: ${traceId}] 💾 Job saved to DB. ID: ${eventLog._id}`);
+        console.log(`[Trace: ${traceId}] 💾 Job saved. ID: ${eventLog._id}`);
 
-        // 4. QUEUE (Pass the Trace ID!)
         await addToQueue({ 
             ...jobData, 
             dbId: eventLog._id,
-            traceId ,
-            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'// <--- 3. PASS THE TORCH (Send ID to Worker)
+            traceId,
+            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
         });
 
-        // --- 💾 SAVE IDEMPOTENCY KEY ---
         if (idempotencyKey) {
-            await redis.set(
-                `idempotency:${idempotencyKey}`, 
-                JSON.stringify({ id: eventLog._id }), 
-                'EX', 
-                86400
-            );
+            await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify({ id: eventLog._id }), 'EX', 86400);
         }
         
-        // 5. REAL-TIME NOTIFICATION
-        io.emit('job-update', { 
-            id: eventLog._id, 
-            status: 'Pending', 
-            data: jobData,
-            traceId // <--- Send to Dashboard too
-        });
+        io.emit('job-update', { id: eventLog._id, status: 'Pending', data: jobData, traceId });
         
-        // 6. RESPONSE
         res.status(202).json({ 
             status: 'accepted', 
-            message: forceRetry ? 'Job forced into queue' : 'Job pushed to queue', 
+            message: 'Job pushed to queue', 
             id: eventLog._id,
-            traceId // <--- 4. GIVE RECEIPT (Return ID to User)
+            traceId 
         });
 
     } catch (error) {
@@ -193,17 +162,16 @@ app.post('/api/events', validateApiKey, async (req, res) => {
         res.status(500).json({ error: error.message, traceId });
     }
 });
-// --- PASTE THE NEW REPLAY ROUTE HERE ---
+
+// --- 🔄 REPLAY ROUTE (Restored!) ---
 app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
     try {
-        // 1. Find the original job in MongoDB
         const eventLog = await Event.findById(req.params.id);
         
         if (!eventLog) {
             return res.status(404).json({ error: 'Event not found' });
         }
 
-        // 2. Reset Status in Mongo
         eventLog.status = 'PENDING';
         eventLog.logs.push({ 
             attempt: eventLog.logs.length + 1, 
@@ -212,20 +180,17 @@ app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
         });
         await eventLog.save();
 
-        // 3. CLEAR REDIS: Remove the old failed job so we can reuse the ID
         const jobId = eventLog._id.toString();
         const existingJob = await myQueue.getJob(jobId);
         if (existingJob) {
-            await existingJob.remove(); // 🗑️ Delete the old clogged job
+            await existingJob.remove(); 
         }
 
-        // 4. Push back to Queue (Now Redis will accept it)
         await addToQueue({ 
             ...eventLog.payload, 
             dbId: eventLog._id 
         });
 
-        // 5. Notify Frontend
         io.emit('job-update', { id: eventLog._id, status: 'Pending (Replay)', data: eventLog.payload });
 
         res.json({ message: 'Replay started', id: eventLog._id });
@@ -234,17 +199,48 @@ app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
     }
 });
 
-// ... (const PORT = 3000 is below here) ...
-// Note: We use 'server.listen', not 'app.listen'
-// --- 🎨 VISUAL DASHBOARD ---
-const figlet = require('figlet');
-const chalk = require('chalk');
+// --- 🛠️ PATCH ROUTE (With Field Mask) ---
+app.patch('/api/events/:id', validateApiKey, async (req, res) => {
+    const { id } = req.params;
+    // Look in URL first, fallback to Header if URL fails
+const updateMask = req.query.updateMask || req.headers['x-update-mask'];
+    const updateData = req.body;
 
-// 1. Define PORT only ONCE
+    console.log('🔍 DEBUG PATCH:', { id, mask: updateMask, bodyKeys: Object.keys(updateData) });
+
+    try {
+        const safeUpdates = applyFieldMask(updateData, updateMask);
+
+        if (Object.keys(safeUpdates).length === 0) {
+            return res.status(400).json({ 
+                error: 'No valid fields to update. Did you provide an updateMask?',
+                receivedMask: updateMask,
+                receivedBody: updateData
+            });
+        }
+
+        console.log(`[Patch] Updating Event ${id} with mask [${updateMask}]`);
+
+        const result = await Event.updateOne({ _id: id }, { $set: safeUpdates });
+
+        if (result.matchedCount === 0) return res.status(404).json({ error: 'Event not found' });
+
+        io.emit('job-update', { 
+            id: id, 
+            status: safeUpdates.status || 'Updated', 
+            response: `Patched fields: ${Object.keys(safeUpdates).join(', ')}` 
+        });
+
+        res.json({ message: 'Event updated successfully', updatedFields: Object.keys(safeUpdates) });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 
-// 2. Start the Server
-server.listen(PORT, () => { // <--- ✅ USE 'server', NOT 'app'
+server.listen(PORT, () => { 
     console.clear(); 
     
     // Big Text Banner

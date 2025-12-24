@@ -3,21 +3,49 @@ import { check, sleep } from 'k6';
 
 // 1. CONFIGURATION
 export const options = {
-  vus: 10,           // 10 Virtual Users running in parallel
-  duration: '30s',   // Run for 30 seconds
+  stages: [
+    { duration: '5s', target: 20 },  // Warm up
+    { duration: '20s', target: 50 }, // 💥 HAMMER TIME (50 Users)
+    { duration: '5s', target: 0 },   // Cool down
+  ],
+  thresholds: {
+    http_req_failed: ['rate<0.01'],   // Error rate < 1%
+    http_req_duration: ['p(95)<200'], // 95% requests < 200ms
+  },
 };
 
+// Helper function to replace k6/utils
+function randomIntBetween(min, max) {
+  return Math.floor(Math.random() * (max - min + 1) + min);
+}
+
 export default function () {
-  // 2. THE TARGET
-  // Note: If running k6 via Docker on Windows, use 'host.docker.internal' to reach your PC
-  // If running k6 locally, change this to 'http://localhost:3000/api/events'
+  // Use host.docker.internal for Windows Docker
   const url = 'http://host.docker.internal:3000/api/events'; 
 
+  // 2. RANDOMIZED CHAOS
+  const rand = randomIntBetween(1, 100);
+  let targetUrl = 'https://httpbin.org/status/200'; // Default: Success
+  let type = 'Success';
+
+  if (rand > 70 && rand <= 85) {
+    targetUrl = 'https://httpbin.org/status/404'; // Permanent Fail
+    type = 'Client Error';
+  } else if (rand > 85 && rand <= 95) {
+    targetUrl = 'https://httpbin.org/status/500'; // Retry Bait
+    type = 'Server Crash';
+  } else if (rand > 95) {
+    targetUrl = 'https://httpbin.org/status/429'; // Throttling
+    type = 'Rate Limited';
+  }
+
   const payload = JSON.stringify({
-    url: "https://httpbin.org/post", // Safe target that accepts POST
+    url: targetUrl,
     payload: { 
-        msg: "Load Test", 
-        timestamp: new Date().toISOString() 
+        msg: "Stress Test", 
+        type: type,
+        vu: __VU, 
+        iter: __ITER 
     }
   });
 
@@ -28,13 +56,11 @@ export default function () {
     },
   };
 
-  // 3. THE ATTACK
   const res = http.post(url, payload, params);
 
-  // 4. THE VERDICT
   check(res, {
-    'status is 202': (r) => r.status === 202, // Did the API accept it?
+    'status is 202': (r) => r.status === 202, 
   });
 
-  sleep(0.5); // Wait 0.5s before hitting it again
+  sleep(0.1); 
 }

@@ -3,70 +3,154 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webhook Dashboard 🚀</title>
-    
+    <title>Webhook Dashboard</title>
     <script src="/socket.io/socket.io.js"></script>
-    
     <style>
-        body { font-family: 'Courier New', monospace; background: #1e1e1e; color: #00ff00; padding: 20px; }
-        h1 { border-bottom: 2px solid #00ff00; padding-bottom: 10px; }
-        #status { color: #ffff00; margin-bottom: 20px; }
-        .card { background: #333; color: white; padding: 10px; margin-bottom: 10px; border-left: 5px solid gray; }
-        .pending { border-left-color: orange; }
-        .completed { border-left-color: #00ff00; }
-        .failed { border-left-color: red; }
+        :root { --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #3b82f6; --success: #22c55e; --error: #ef4444; --warn: #eab308; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
+        
+        /* METRICS BAR */
+        .metrics { display: flex; gap: 15px; margin-bottom: 20px; }
+        .metric-card { background: var(--card); padding: 15px; border-radius: 8px; flex: 1; text-align: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .metric-val { font-size: 2em; font-weight: bold; }
+        .metric-label { font-size: 0.8em; text-transform: uppercase; color: #94a3b8; }
+        .status-ready { color: var(--success); } .status-err { color: var(--error); }
+
+        /* LOG FEED */
+        #events { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+        .event-card { background: var(--card); padding: 15px; border-radius: 8px; border-left: 5px solid var(--accent); transition: all 0.3s ease; }
+        .event-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.9em; color: #94a3b8; }
+        .status-badge { padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+        
+        /* STATUS COLORS */
+        .status-Pending { border-color: var(--warn); } 
+        .status-Pending .status-badge { background: #422006; color: var(--warn); }
+        
+        .status-Completed, .status-Updated { border-color: var(--success); }
+        .status-Completed .status-badge, .status-Updated .status-badge { background: #052e16; color: var(--success); }
+        
+        .status-Failed, .status-aborted { border-color: var(--error); }
+        .status-Failed .status-badge, .status-aborted .status-badge { background: #450a0a; color: var(--error); }
+
+        /* REPLAY BUTTON */
+        .replay-btn {
+            background: var(--accent); color: white; border: none; padding: 5px 10px; 
+            border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-top: 10px; width: 100%;
+        }
+        .replay-btn:hover { opacity: 0.9; }
+        
+        pre { background: #000; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.8em; color: #33ff00; }
     </style>
 </head>
 <body>
+    <div class="header">
+        <h1>🚀 Webhook Dashboard</h1>
+        <div id="connection-status">🔴 Disconnected</div>
+    </div>
 
-    <h1>⚡ Webhook Dispatcher UI</h1>
-    <div id="status">🔴 Disconnected</div>
-    <div id="logs"></div>
+    <div class="metrics">
+        <div class="metric-card">
+            <div class="metric-val" id="count-active">0</div>
+            <div class="metric-label">Active Workers</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-val" id="count-waiting">0</div>
+            <div class="metric-label">Queue Backlog</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-val" id="count-failed" style="color: var(--error)">0</div>
+            <div class="metric-label">Failed (DLQ)</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-val" id="redis-status" class="status-err">OFFLINE</div>
+            <div class="metric-label">Redis Connection</div>
+        </div>
+    </div>
+
+    <div id="events"></div>
 
     <script>
-        // 2. Connect to the Server (defaults to current URL)
         const socket = io();
+        const eventsContainer = document.getElementById('events');
+        const connStatus = document.getElementById('connection-status');
 
-        const statusDiv = document.getElementById('status');
-        const logsDiv = document.getElementById('logs');
-
-        // --- CONNECTION DEBUGGING ---
         socket.on('connect', () => {
-            console.log('✅ Connected to Server! ID:', socket.id);
-            statusDiv.innerHTML = '🟢 Connected';
-            statusDiv.style.color = '#00ff00';
+            connStatus.innerText = "🟢 Real-time Feed Active";
+            connStatus.style.color = "var(--success)";
         });
 
-        socket.on('connect_error', (err) => {
-            console.error('❌ Connection Failed:', err);
-            statusDiv.innerHTML = '🔴 Connection Failed (Check Console)';
-            statusDiv.style.color = 'red';
+        // 📊 HANDLE METRICS UPDATES
+        socket.on('dashboard-stats', (stats) => {
+            document.getElementById('count-active').innerText = stats.active;
+            document.getElementById('count-waiting').innerText = stats.waiting;
+            document.getElementById('count-failed').innerText = stats.failed;
+            
+            const redisEl = document.getElementById('redis-status');
+            redisEl.innerText = stats.redisStatus.toUpperCase();
+            redisEl.className = stats.redisStatus === 'ready' ? 'metric-val status-ready' : 'metric-val status-err';
         });
 
-        socket.on('disconnect', () => {
-            console.warn('⚠️ Disconnected');
-            statusDiv.innerHTML = '🔴 Disconnected';
-            statusDiv.style.color = 'red';
-        });
-
-        // --- LISTEN FOR JOB UPDATES ---
+        // 🔄 HANDLE JOB UPDATES (Fixed "One Place Only" Logic)
         socket.on('job-update', (job) => {
-            console.log('📩 Event Received:', job); // <--- Check Console for this!
-            
-            // Create a visual card
-            const div = document.createElement('div');
-            div.className = `card ${job.status.toLowerCase()}`;
-            
-            let content = `<strong>[${new Date().toLocaleTimeString()}] Job ${job.id}</strong><br>
-                           Status: ${job.status}`;
-            
-            if (job.response) {
-                content += `<br><em>Response: ${JSON.stringify(job.response).substring(0, 100)}...</em>`;
+            // 1. Try to find the existing card
+            let card = document.getElementById(`card-${job.id}`);
+
+            // 2. If it doesn't exist, create it and put it at the TOP (Prepend)
+            if (!card) {
+                card = document.createElement('div');
+                card.id = `card-${job.id}`;
+                eventsContainer.prepend(card);
             }
             
-            div.innerHTML = content;
-            logsDiv.prepend(div); // Add to top
+            // 3. Update the content (Whether it's new or old, we update properties here)
+            const statusClass = `status-${job.status.split(' ')[0]}`; 
+            card.className = `event-card ${statusClass}`;
+
+            // 4. Button Logic: Show Replay for EVERYTHING except Pending
+            // This ensures you can replay Failed, Aborted, or even Completed jobs
+            let actionButton = '';
+            if (job.status !== 'Pending' && job.status !== 'active') {
+                actionButton = `<button class="replay-btn" onclick="replayJob('${job.id}')">🔄 Replay Job</button>`;
+            }
+
+            const time = new Date().toLocaleTimeString();
+            const dataPreview = typeof job.response === 'object' ? JSON.stringify(job.response, null, 2) : job.response;
+
+            card.innerHTML = `
+                <div class="event-header">
+                    <span>ID: ${job.id.slice(-6)}</span>
+                    <span class="status-badge">${job.status}</span>
+                </div>
+                <div style="font-size: 0.8em; margin-bottom: 5px; color: #64748b;">${time}</div>
+                <pre>${dataPreview || 'Processing...'}</pre>
+                ${actionButton}
+            `;
+
+            // Cleanup: Keep list size manageable
+            if (eventsContainer.children.length > 50) {
+                eventsContainer.lastChild.remove();
+            }
         });
+
+        // 🛠️ REPLAY FUNCTION
+        async function replayJob(id) {
+            try {
+                const btn = document.querySelector(`#card-${id} button`);
+                if(btn) btn.innerText = "⏳ Queuing...";
+                
+                const res = await fetch(`/api/events/${id}/replay`, {
+                    method: 'POST',
+                    headers: { 'x-api-key': 'architect-secret-123' }
+                });
+                
+                const data = await res.json();
+                if (!res.ok) alert("Error: " + data.error);
+                
+            } catch (err) {
+                alert("Failed to replay: " + err.message);
+            }
+        }
     </script>
 </body>
 </html>
