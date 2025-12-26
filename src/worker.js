@@ -1,4 +1,4 @@
-// src/worker.js (Final Production Version: Atomic Idempotency + Circuit Breaker + Smart Batching)
+// src/worker.js (Final Production Version: Atomic Idempotency + Circuit Breaker + Tracing)
 require('dotenv').config();
 const { Worker } = require('bullmq'); 
 const mongoose = require('mongoose');
@@ -9,12 +9,7 @@ const chalk = require('chalk');
 const redis = require('./redis'); 
 const Event = require('./models/Event'); 
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
-
-// --- ⚡ BATCHING CONFIGURATION (The 10/10 Upgrade) ---
-const BATCH_SIZE = 500;        // Max operations to hold in memory
-const FLUSH_INTERVAL = 2000;   // Max time to wait (2 seconds)
-let bulkOps = [];              // The Buffer
-let flushTimer = null;         // The Timer
+const { addToBatch, shutdownBatchProcessor } = require('./batchProcessor');
 
 // --- 🔐 SECURITY HELPER ---
 function createHmacSignature(payload) {
@@ -39,103 +34,83 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db'
     .then(() => console.log('✅ Worker connected to MongoDB'))
     .catch(err => console.error('❌ MongoDB Error:', err));
 
-// --- ⚡ BATCH FLUSHER (The Engine) ---
-async function flushToMongo() {
-    if (bulkOps.length === 0) return;
-
-    // 1. Swap buffer immediately (Concurrency Safety)
-    const opsToExecute = [...bulkOps];
-    bulkOps = [];
-
-    try {
-        // 2. The Magic: Execute hundreds of updates in ONE command
-        await Event.bulkWrite(opsToExecute);
-        // console.log(chalk.gray(`💾 Bulk flushed ${opsToExecute.length} updates to Mongo`));
-    } catch (err) {
-        console.error('❌ Bulk Write Failed:', err);
-        // In a real banking app, you would dump 'opsToExecute' to a 'failed_logs.json' file here to retry later.
-    }
-}
-
-// Start the safety timer
-setInterval(flushToMongo, FLUSH_INTERVAL);
-
-// Helper to push to buffer safely
-function addToBatch(op) {
-    bulkOps.push(op);
-    if (bulkOps.length >= BATCH_SIZE) {
-        flushToMongo();
-    }
-}
-
 // --- 👷 WORKER PROCESSOR ---
 const worker = new Worker('webhook-queue', async (job) => {
     const { url, payload, dbId, traceId, deliverySemantics } = job.data;
     const tid = traceId || 'NO-TRACE-ID'; 
     const currentAttempt = job.attemptsMade + 1;
 
+    // We explicitly verify that we are running in "Unordered" mode.
     if (deliverySemantics !== 'AT_LEAST_ONCE_UNORDERED') {
-        // console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown delivery semantics`);
+        console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown delivery semantics: ${deliverySemantics}`);
+        // In a strict financial system, we might even throw an error here.
+        // For now, a warning proves you are watching the system behavior.
     }
 
-    // 👇 1. ATOMIC IDEMPOTENCY CHECK
+    // 👇 1. ATOMIC IDEMPOTENCY CHECK (The "Senior" Logic)
+    // We attempt to set a lock key. 'NX' means "Only set if Not Exists".
     const idempotencyKey = `idempotency:${dbId}`;
-    const lockAcquired = await redis.set(idempotencyKey, 'LOCKED', 'NX', 'EX', 60 * 60 * 24); 
+    const lockAcquired = await redis.set(idempotencyKey, 'LOCKED', 'NX', 'EX', 60 * 60 * 24); // 24h lock
 
     if (!lockAcquired) {
-        // console.warn(`[Trace: ${tid}] 🔄 Duplicate Job Detected. Skipping.`);
+        // If we couldn't set the key, it means another worker (or previous run) already has it.
+        console.warn(`[Trace: ${tid}] 🔄 Duplicate Job Detected (Idempotency Lock Active). Skipping.`);
         return { status: 'skipped', reason: 'Duplicate Job' };
     }
 
-    // console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
+    console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId} (Attempt ${currentAttempt})`);
 
-    // ⚡ BATCH UPGRADE: Replaces await Event.findByIdAndUpdate()
+    // 2. Mark as PROCESSING
     if (dbId) {
-        addToBatch({
-            updateOne: {
-                filter: { _id: dbId },
-                update: { status: 'PROCESSING', $inc: { attemptCount: 1 } }
-            }
+        await Event.findByIdAndUpdate(dbId, { 
+            status: 'PROCESSING', 
+            $inc: { attemptCount: 1 } 
         });
     }
 
     try {
         // 🛡️ 3. CHECK CIRCUIT BREAKER
         const circuitStatus = await getCircuitStatus(url);
-        if (circuitStatus === 'OPEN') throw new Error('Circuit Breaker Open'); 
+        if (circuitStatus === 'OPEN') {
+            throw new Error('Circuit Breaker Open'); 
+        }
 
         // --- ⚡ TIMEOUT PROTECTION ---
         const signature = createHmacSignature(payload);
+        
         const response = await axios.post(url, payload, {
-            headers: { 'X-Signature': signature, 'Content-Type': 'application/json' },
+            headers: { 
+                'X-Signature': signature, 
+                'Content-Type': 'application/json' 
+            },
             timeout: 5000 
         });
 
         // 🛡️ 4. RECORD SUCCESS
         await recordSuccess(url);
-        // console.log(`[Trace: ${tid}] ✅ Worker: Success!`);
 
-        // ⚡ BATCH UPGRADE: Success Log
+        console.log(`[Trace: ${tid}] ✅ Worker: Success! Status: ${response.status}`);
+
         if (dbId) {
-            addToBatch({
-                updateOne: {
-                    filter: { _id: dbId },
-                    update: {
-                        status: 'COMPLETED',
-                        finalHttpStatus: response.status,
-                        failureType: null,
-                        $push: { logs: { attempt: currentAttempt, status: response.status, response: 'Success' } }
-                    }
-                }
-            });
+            // NEW CODE (Batch Add)
+if (dbId) {
+    addToBatch({
+        dbId,
+        status: 'COMPLETED',
+        httpStatus: response.status,
+        logEntry: { attempt: currentAttempt, status: response.status, response: 'Success' }
+    });
+}
         }
         
         return response.data;
 
     } catch (error) {
         // 👇 CRITICAL: DELETE LOCK ON FAILURE
+        // If we failed, we must allow the job to be retried!
         await redis.del(idempotencyKey);
 
+        // --- 5. SMART ERROR HANDLING ---
         const type = classifyError(error);
         const status = error.response ? error.response.status : (error.code || 0);
         const msg = error.message;
@@ -144,62 +119,63 @@ const worker = new Worker('webhook-queue', async (job) => {
             await recordFailure(url);
         }
 
-        // console.error(`[Trace: ${tid}] ⚠️ Worker: Failed. Type: ${type}`);
+        console.error(`[Trace: ${tid}] ⚠️ Worker: Failed. Type: ${type} (${msg})`);
 
-        // ⚡ BATCH UPGRADE: Failure Log
         if (dbId) {
-            const updateDoc = {
-                $push: { logs: { attempt: currentAttempt, status: typeof status === 'number' ? status : 0, response: msg } }
-            };
-
-            // If PERMANENT, we also update the main status
-            if (type === 'PERMANENT') {
-                updateDoc.status = 'FAILED_PERMANENT';
-                updateDoc.failureType = 'PERMANENT';
-                updateDoc.finalHttpStatus = typeof status === 'number' ? status : 0;
-                updateDoc.lastError = msg;
-            } else {
-                updateDoc.status = 'FAILED'; // Just for now, BullMQ will retry
-                updateDoc.failureType = 'TRANSIENT';
-                updateDoc.lastError = msg;
-            }
-
             addToBatch({
-                updateOne: {
-                    filter: { _id: dbId },
-                    update: updateDoc
-                }
-            });
-        }
+        dbId,
+        status: 'FAILED',
+        httpStatus: status,
+        logEntry: { attempt: currentAttempt, status: status, response: msg }
+    });
 
-        if (type === 'PERMANENT') return { status: 'aborted', reason: 'Permanent Failure' };
+            if (type === 'PERMANENT') {
+                await Event.findByIdAndUpdate(dbId, {
+                    status: 'FAILED_PERMANENT',
+                    failureType: 'PERMANENT',
+                    finalHttpStatus: typeof status === 'number' ? status : 0,
+                    lastError: msg
+                });
+                return { status: 'aborted', reason: 'Permanent Failure' };
+            } else {
+                await Event.findByIdAndUpdate(dbId, {
+                    status: 'FAILED',
+                    failureType: 'TRANSIENT',
+                    finalHttpStatus: typeof status === 'number' ? status : 0,
+                    lastError: msg
+                });
+            }
+        }
+        
         throw error; 
     }
 }, {
     connection: redis,
-    concurrency: 200, // "God Mode" Concurrency
-    limiter: { max: 50, duration: 1000 }
+    concurrency: 50,
+    limiter: { 
+        max: 50,
+        duration: 1000, 
+    }
 });
 
 
 // --- 💀 DEATH LISTENER (DLQ Handler) ---
 worker.on('failed', async (job, err) => {
+    // Check if the job has exhausted all attempts
     if (job && job.attemptsMade >= job.opts.attempts) {
         const tid = job.data.traceId || 'NO-TRACE-ID';
-        // console.log(chalk.red.bold(`[Trace: ${tid}] 💀 Job ${job.id} has DIED -> DLQ`));
+        
+        console.log(chalk.red.bold(`[Trace: ${tid}] 💀 Job ${job.id} has DIED.`));
+        console.log(chalk.red(`   ↳ 🗑️  Moved to Dead Letter Queue (DLQ) in Redis`));
+        console.log(chalk.gray(`   ↳ Reason: ${err.message}`));
 
-        // ⚡ BATCH UPGRADE: Even DLQ updates are batched for consistency
+        // Update Mongo to reflect this final state
         const dbId = job.data.dbId;
         if (dbId) {
-            addToBatch({
-                updateOne: {
-                    filter: { _id: dbId },
-                    update: {
-                        status: 'DEAD',
-                        failureType: 'PERMANENT',
-                        lastError: `Max Retries Reached: ${err.message}`
-                    }
-                }
+            await Event.findByIdAndUpdate(dbId, {
+                status: 'DEAD', // <--- This confirms it's in your DLQ view
+                failureType: 'PERMANENT',
+                lastError: `Max Retries Reached: ${err.message}`
             });
         }
     }
@@ -208,20 +184,16 @@ worker.on('failed', async (job, err) => {
 // --- 🎨 DASHBOARD STARTUP ---
 console.clear();
 console.log(chalk.magenta(figlet.textSync('Worker Node', { horizontalLayout: 'full' })));
-console.log(chalk.yellow.bold('\n🔸 BACKGROUND WORKER ACTIVE (BATCHED MODE) 🔸'));
+console.log(chalk.yellow.bold('\n🔸 BACKGROUND WORKER ACTIVE 🔸'));
 console.log(chalk.gray('-----------------------------------'));
 console.log(`📡  Listening on:     ${chalk.cyan('webhook-queue')}`);
-console.log(`🧵  Concurrency:      ${chalk.magenta('50 Parallel Jobs')}`);
-console.log(`💾  Write Strategy:   ${chalk.green('BulkWrite (Batch: 500)')}`);
+console.log(`🧵  Concurrency:      ${chalk.magenta('10 Parallel Jobs')}`);
+console.log(`🔒  Idempotency:      ${chalk.green('Atomic Redis Locks')}`);
+console.log(`🧱  Circuit Breaker:  ${chalk.green('Active (5 fails / 1 min)')}`);
 console.log(chalk.gray('-----------------------------------'));
 
 async function gracefulShutdown(signal) {
     console.log(chalk.yellow(`\nReceived ${signal}. Closing worker safely...`));
-    
-    // ⚡ CRITICAL: Flush remaining logs before dying
-    console.log('💾 Flushing remaining DB logs...');
-    await flushToMongo(); 
-
     await worker.close();
     await mongoose.connection.close();
     console.log(chalk.green('✅ Worker shut down successfully.'));

@@ -6,19 +6,26 @@ export const options = {
     quick_test: {
       executor: 'shared-iterations', 
       
-      // 100 users working together to hit 5,000 total requests
-      vus: 100,             
+      // 50 users is plenty fast for a 5k run (keeps memory stable)
+      // You can bump this to 100 if your Mock Server is very fast
+      vus: 50,             
+      
+      // STOP exactly after 5000 requests
       iterations: 5000,     
-      maxDuration: '30s',   // Safety timeout
+      
+      // If it takes longer than 1m, something is wrong
+      maxDuration: '1m',    
     },
   },
 };
 
 export default function () {
+  // 1. The Entry Point (Your API)
   const url = 'http://host.docker.internal:3000/api/events'; 
   
-  // Use your local Node mock server (Port 8000) for best speed
-  const targetUrl = 'http://host.docker.internal:8000/webhook';
+  // 2. The Target (Where the Worker sends data)
+  // This points to your laptop's Port 8000 (Node Mock or Docker container)
+  const targetUrl = 'http://speed-target:8080/';
 
   const payload = JSON.stringify({
     url: targetUrl,
