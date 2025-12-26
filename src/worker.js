@@ -10,6 +10,14 @@ const redis = require('./redis');
 const Event = require('./models/Event'); 
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
 const { addToBatch, shutdownBatchProcessor } = require('./batchProcessor');
+function safeHttpStatus(val) {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
+  if (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val))) {
+    const n = Number(val);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
 
 // --- 🔐 SECURITY HELPER ---
 function createHmacSignature(payload) {
@@ -94,61 +102,59 @@ const worker = new Worker('webhook-queue', async (job) => {
         if (dbId) {
             // NEW CODE (Batch Add)
 if (dbId) {
-    addToBatch({
-        dbId,
-        status: 'COMPLETED',
-        httpStatus: response.status,
-        logEntry: { attempt: currentAttempt, status: response.status, response: 'Success' }
-    });
+     addToBatch({
+    dbId,
+    status: 'COMPLETED',
+    httpStatus: safeHttpStatus(response?.status),
+    logEntry: { attempt: currentAttempt, status: safeHttpStatus(response?.status), response: 'Success' },
+    errorCode: null,
+    lastError: null,
+    failureType: null
+  });
 }
         }
         
         return response.data;
 
     } catch (error) {
-        // 👇 CRITICAL: DELETE LOCK ON FAILURE
-        // If we failed, we must allow the job to be retried!
-        await redis.del(idempotencyKey);
+  // ensure lock deleted so retries can proceed
+  await redis.del(idempotencyKey);
 
-        // --- 5. SMART ERROR HANDLING ---
-        const type = classifyError(error);
-        const status = error.response ? error.response.status : (error.code || 0);
-        const msg = error.message;
+  const type = classifyError(error);
+  const msg = error && error.message ? error.message : String(error);
 
-        if (msg !== 'Circuit Breaker Open' && type === 'TRANSIENT') {
-            await recordFailure(url);
-        }
+  // Extract numeric HTTP status only if present
+  const httpStatusFromResp = error && error.response && typeof error.response.status === 'number'
+    ? error.response.status
+    : null;
 
-        console.error(`[Trace: ${tid}] ⚠️ Worker: Failed. Type: ${type} (${msg})`);
+  const httpStatus = safeHttpStatus(httpStatusFromResp);
+  const errorCode = (error && error.code) ? String(error.code) : null; // e.g. ENOTFOUND, ECONNREFUSED
 
-        if (dbId) {
-            addToBatch({
-        dbId,
-        status: 'FAILED',
-        httpStatus: status,
-        logEntry: { attempt: currentAttempt, status: status, response: msg }
+  if (msg !== 'Circuit Breaker Open' && type === 'TRANSIENT') {
+    await recordFailure(url);
+  }
+
+  console.error(`[Trace: ${tid}] ⚠️ Worker: Failed. Type: ${type} (${msg})`);
+
+  if (dbId) {
+    addToBatch({
+      dbId,
+      status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
+      failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
+      httpStatus,           // numeric or null
+      errorCode,            // transport error string or null
+      lastError: msg || null,
+      logEntry: { attempt: currentAttempt, status: httpStatus, response: msg }
     });
+  }
 
-            if (type === 'PERMANENT') {
-                await Event.findByIdAndUpdate(dbId, {
-                    status: 'FAILED_PERMANENT',
-                    failureType: 'PERMANENT',
-                    finalHttpStatus: typeof status === 'number' ? status : 0,
-                    lastError: msg
-                });
-                return { status: 'aborted', reason: 'Permanent Failure' };
-            } else {
-                await Event.findByIdAndUpdate(dbId, {
-                    status: 'FAILED',
-                    failureType: 'TRANSIENT',
-                    finalHttpStatus: typeof status === 'number' ? status : 0,
-                    lastError: msg
-                });
-            }
-        }
-        
-        throw error; 
-    }
+  if (type === 'PERMANENT') {
+    return { status: 'aborted', reason: 'Permanent Failure' };
+  }
+
+  throw error;
+}
 }, {
     connection: redis,
     concurrency: 50,

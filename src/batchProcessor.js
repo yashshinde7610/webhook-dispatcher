@@ -13,31 +13,62 @@ let flushTimer = null;
 async function flushBuffer() {
     if (writeBuffer.length === 0) return;
 
-    // Critical Section: Copy & Clear Buffer atomically (in JS terms)
+    // 1️⃣ Copy & clear buffer
     const currentBatch = [...writeBuffer];
-    writeBuffer = []; 
+    writeBuffer = [];
+
+    // 2️⃣ DEFENSIVE GUARD (PUT IT HERE)
+    currentBatch.forEach(item => {
+        // If finalHttpStatus is accidentally a string (ENOTFOUND etc)
+        if (typeof item.finalHttpStatus === 'string' && item.finalHttpStatus.trim() !== '') {
+            console.warn(
+                `[Buffer] coercing string finalHttpStatus -> errorCode for dbId=${item.dbId}:`,
+                item.finalHttpStatus
+            );
+            item.errorCode = item.errorCode || String(item.finalHttpStatus);
+            item.finalHttpStatus = null;
+        }
+
+        // If worker accidentally sent httpStatus instead
+        if (typeof item.httpStatus === 'string' && item.httpStatus.trim() !== '') {
+            const n = Number(item.httpStatus);
+            if (Number.isFinite(n)) {
+                item.finalHttpStatus = n;
+            } else {
+                item.errorCode = item.errorCode || String(item.httpStatus);
+                item.finalHttpStatus = null;
+            }
+            delete item.httpStatus;
+        }
+    });
 
     try {
-        console.log(chalk.blue(`💾 [Buffer] Flushing ${currentBatch.length} records to DB...`));
+        console.log(`💾 [Buffer] Flushing ${currentBatch.length} records to DB...`);
 
-        // Transform buffer items into MongoDB Bulk Operations
+        // 3️⃣ Build bulk ops
         const ops = currentBatch.map(item => ({
             updateOne: {
                 filter: { _id: item.dbId },
                 update: {
-                    status: item.status,
-                    finalHttpStatus: item.httpStatus,
-                    $push: { logs: item.logEntry }
+                    $set: {
+                        status: item.status,
+                        finalHttpStatus: item.finalHttpStatus,
+                        failureType: item.failureType || null,
+                        lastError: item.lastError || null,
+                        errorCode: item.errorCode || null
+                    },
+                    ...(item.logEntry ? { $push: { logs: item.logEntry } } : {})
                 }
             }
         }));
 
         await Event.bulkWrite(ops);
-        console.log(chalk.green(`✅ [Buffer] Batch Write Complete.`));
+        console.log(`✅ [Buffer] Batch Write Complete.`);
     } catch (err) {
-        console.error(chalk.red('❌ [Buffer] Write Failed:'), err);
+        console.error('❌ [Buffer] Write Failed:', err);
     }
 }
+
 
 // Start the OS Timer
 flushTimer = setInterval(() => {
