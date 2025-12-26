@@ -1,5 +1,4 @@
 // src/utils/fieldMask.js
-
 /**
  * Applies a Field Mask to a payload.
  * Only fields listed in the mask will be included in the update.
