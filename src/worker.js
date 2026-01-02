@@ -1,41 +1,21 @@
-// src/worker.js (Final Production Version: Atomic Idempotency + Circuit Breaker + Tracing)
+// src/worker.js
 require('dotenv').config();
 const { Worker } = require('bullmq'); 
 const mongoose = require('mongoose');
 const axios = require('axios');
-const crypto = require('crypto');
 const figlet = require('figlet');
 const chalk = require('chalk');
+
+// Infrastructure
 const redis = require('./redis'); 
 const Event = require('./models/Event'); 
+
+// Services & Utils
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
-const { addToBatch, shutdownBatchProcessor } = require('./batchProcessor');
-function safeHttpStatus(val) {
-  if (typeof val === 'number' && Number.isFinite(val)) return val;
-  if (typeof val === 'string' && val.trim() !== '' && !Number.isNaN(Number(val))) {
-    const n = Number(val);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
+const { addToBatch } = require('./batchProcessor');
 
-// --- 🔐 SECURITY HELPER ---
-function createHmacSignature(payload) {
-    const secret = process.env.WEBHOOK_SECRET;
-    if (!secret) throw new Error('❌ WEBHOOK_SECRET is missing in .env file');
-    return crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
-}
-
-// --- 🧠 CLASSIFICATION HELPER ---
-function classifyError(error) {
-    if (error.message === 'Circuit Breaker Open') return 'TRANSIENT';
-    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') return 'TRANSIENT';
-    if (!error.response) return 'TRANSIENT'; 
-    const status = error.response.status;
-    if (status === 429 || status >= 500) return 'TRANSIENT'; 
-    if (status >= 400) return 'PERMANENT'; 
-    return 'TRANSIENT'; 
-}
+const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
+const { acquireIdempotencyLock, releaseIdempotencyLock } = require('./services/lockService');
 
 // --- 🔌 CONNECT MONGO ---
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db')
@@ -48,27 +28,19 @@ const worker = new Worker('webhook-queue', async (job) => {
     const tid = traceId || 'NO-TRACE-ID'; 
     const currentAttempt = job.attemptsMade + 1;
 
-    // We explicitly verify that we are running in "Unordered" mode.
+    // 1. Validate Delivery Semantics
     if (deliverySemantics !== 'AT_LEAST_ONCE_UNORDERED') {
-        console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown delivery semantics: ${deliverySemantics}`);
-        // In a strict financial system, we might even throw an error here.
-        // For now, a warning proves you are watching the system behavior.
+        console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown semantics: ${deliverySemantics}`);
     }
 
-    // 👇 1. ATOMIC IDEMPOTENCY CHECK (The "Senior" Logic)
-    // We attempt to set a lock key. 'NX' means "Only set if Not Exists".
-    const idempotencyKey = `idempotency:${dbId}`;
-    const lockAcquired = await redis.set(idempotencyKey, 'LOCKED', 'NX', 'EX', 60 * 60 * 24); // 24h lock
-
-    if (!lockAcquired) {
-        // If we couldn't set the key, it means another worker (or previous run) already has it.
-        console.warn(`[Trace: ${tid}] 🔄 Duplicate Job Detected (Idempotency Lock Active). Skipping.`);
+    // 2. Idempotency Check
+    const isLocked = await acquireIdempotencyLock(redis, dbId);
+    if (!isLocked) {
+        console.warn(`[Trace: ${tid}] 🔄 Duplicate Job Detected. Skipping.`);
         return { status: 'skipped', reason: 'Duplicate Job' };
     }
 
-    console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId} (Attempt ${currentAttempt})`);
-
-    // 2. Mark as PROCESSING
+    // 3. Update Status to PROCESSING
     if (dbId) {
         await Event.findByIdAndUpdate(dbId, { 
             status: 'PROCESSING', 
@@ -76,16 +48,16 @@ const worker = new Worker('webhook-queue', async (job) => {
         });
     }
 
+    console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
+
     try {
-        // 🛡️ 3. CHECK CIRCUIT BREAKER
-        const circuitStatus = await getCircuitStatus(url);
-        if (circuitStatus === 'OPEN') {
-            throw new Error('Circuit Breaker Open'); 
+        // 4. Circuit Breaker Check
+        if (await getCircuitStatus(url) === 'OPEN') {
+            throw new Error('Circuit Breaker Open');
         }
 
-        // --- ⚡ TIMEOUT PROTECTION ---
-        const signature = createHmacSignature(payload);
-        
+        // 5. Prepare & Send Request
+        const signature = createHmacSignature(payload, process.env.WEBHOOK_SECRET);
         const response = await axios.post(url, payload, {
             headers: { 
                 'X-Signature': signature, 
@@ -94,92 +66,71 @@ const worker = new Worker('webhook-queue', async (job) => {
             timeout: 5000 
         });
 
-        // 🛡️ 4. RECORD SUCCESS
+        // 6. Handle Success
         await recordSuccess(url);
-
-        console.log(`[Trace: ${tid}] ✅ Worker: Success! Status: ${response.status}`);
+        console.log(`[Trace: ${tid}] ✅ Success: ${response.status}`);
 
         if (dbId) {
-            // NEW CODE (Batch Add)
-if (dbId) {
-     addToBatch({
-    dbId,
-    status: 'COMPLETED',
-    httpStatus: safeHttpStatus(response?.status),
-    logEntry: { attempt: currentAttempt, status: safeHttpStatus(response?.status), response: 'Success' },
-    errorCode: null,
-    lastError: null,
-    failureType: null
-  });
-}
+            addToBatch({
+                dbId,
+                status: 'COMPLETED',
+                httpStatus: safeHttpStatus(response.status),
+                logEntry: { 
+                    attempt: currentAttempt, 
+                    status: safeHttpStatus(response.status), 
+                    response: 'Success' 
+                }
+            });
         }
         
         return response.data;
 
     } catch (error) {
-  // ensure lock deleted so retries can proceed
-  await redis.del(idempotencyKey);
+        // 7. Handle Failure
+        await releaseIdempotencyLock(redis, dbId); // Allow retries
 
-  const type = classifyError(error);
-  const msg = error && error.message ? error.message : String(error);
+        const type = classifyError(error);
+        const msg = error.message || String(error);
+        const httpStatus = safeHttpStatus(error.response?.status);
+        const errorCode = error.code ? String(error.code) : null;
 
-  // Extract numeric HTTP status only if present
-  const httpStatusFromResp = error && error.response && typeof error.response.status === 'number'
-    ? error.response.status
-    : null;
+        if (msg !== 'Circuit Breaker Open' && type === 'TRANSIENT') {
+            await recordFailure(url);
+        }
 
-  const httpStatus = safeHttpStatus(httpStatusFromResp);
-  const errorCode = (error && error.code) ? String(error.code) : null; // e.g. ENOTFOUND, ECONNREFUSED
+        console.error(`[Trace: ${tid}] ⚠️ Failed: ${type} (${msg})`);
 
-  if (msg !== 'Circuit Breaker Open' && type === 'TRANSIENT') {
-    await recordFailure(url);
-  }
+        if (dbId) {
+            addToBatch({
+                dbId,
+                status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
+                failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
+                httpStatus,
+                errorCode,
+                lastError: msg,
+                logEntry: { attempt: currentAttempt, status: httpStatus, response: msg }
+            });
+        }
 
-  console.error(`[Trace: ${tid}] ⚠️ Worker: Failed. Type: ${type} (${msg})`);
+        if (type === 'PERMANENT') {
+            return { status: 'aborted', reason: 'Permanent Failure' };
+        }
 
-  if (dbId) {
-    addToBatch({
-      dbId,
-      status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
-      failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
-      httpStatus,           // numeric or null
-      errorCode,            // transport error string or null
-      lastError: msg || null,
-      logEntry: { attempt: currentAttempt, status: httpStatus, response: msg }
-    });
-  }
-
-  if (type === 'PERMANENT') {
-    return { status: 'aborted', reason: 'Permanent Failure' };
-  }
-
-  throw error;
-}
+        throw error; // Triggers BullMQ retry
+    }
 }, {
     connection: redis,
     concurrency: 50,
-    limiter: { 
-        max: 50,
-        duration: 1000, 
-    }
+    limiter: { max: 50, duration: 1000 }
 });
 
-
-// --- 💀 DEATH LISTENER (DLQ Handler) ---
+// --- 💀 DEATH LISTENER ---
 worker.on('failed', async (job, err) => {
-    // Check if the job has exhausted all attempts
     if (job && job.attemptsMade >= job.opts.attempts) {
-        const tid = job.data.traceId || 'NO-TRACE-ID';
-        
-        console.log(chalk.red.bold(`[Trace: ${tid}] 💀 Job ${job.id} has DIED.`));
-        console.log(chalk.red(`   ↳ 🗑️  Moved to Dead Letter Queue (DLQ) in Redis`));
-        console.log(chalk.gray(`   ↳ Reason: ${err.message}`));
-
-        // Update Mongo to reflect this final state
-        const dbId = job.data.dbId;
-        if (dbId) {
-            await Event.findByIdAndUpdate(dbId, {
-                status: 'DEAD', // <--- This confirms it's in your DLQ view
+        console.log(chalk.red.bold(`[Trace: ${job.data.traceId}] 💀 Job ${job.id} DIED -> DLQ`));
+        if (job.data.dbId) {
+            await Event.findByIdAndUpdate(job.data.dbId, {
+                status: 'DEAD',
                 failureType: 'PERMANENT',
                 lastError: `Max Retries Reached: ${err.message}`
             });
@@ -187,24 +138,15 @@ worker.on('failed', async (job, err) => {
     }
 });
 
-// --- 🎨 DASHBOARD STARTUP ---
+// --- 🎨 STARTUP LOGS ---
 console.clear();
-console.log(chalk.magenta(figlet.textSync('Worker Node', { horizontalLayout: 'full' })));
+console.log(chalk.magenta(figlet.textSync('Worker Node')));
 console.log(chalk.yellow.bold('\n🔸 BACKGROUND WORKER ACTIVE 🔸'));
-console.log(chalk.gray('-----------------------------------'));
-console.log(`📡  Listening on:     ${chalk.cyan('webhook-queue')}`);
-console.log(`🧵  Concurrency:      ${chalk.magenta('10 Parallel Jobs')}`);
-console.log(`🔒  Idempotency:      ${chalk.green('Atomic Redis Locks')}`);
-console.log(`🧱  Circuit Breaker:  ${chalk.green('Active (5 fails / 1 min)')}`);
-console.log(chalk.gray('-----------------------------------'));
+// ... (rest of your logs)
 
-async function gracefulShutdown(signal) {
-    console.log(chalk.yellow(`\nReceived ${signal}. Closing worker safely...`));
+// --- 🛑 SHUTDOWN ---
+process.on('SIGINT', async () => {
     await worker.close();
     await mongoose.connection.close();
-    console.log(chalk.green('✅ Worker shut down successfully.'));
     process.exit(0);
-}
-
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+});

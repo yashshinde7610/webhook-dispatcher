@@ -1,6 +1,7 @@
 // src/batchProcessor.js
 const chalk = require('chalk');
 const Event = require('./models/Event');
+const { safeHttpStatus } = require('./utils/workerUtils');
 
 // --- OS CONFIGURATION ---
 const BATCH_SIZE = 100;       // Flush when buffer holds 100 items
