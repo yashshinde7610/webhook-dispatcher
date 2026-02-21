@@ -12,7 +12,7 @@ const Event = require('./models/Event');
 
 // Services & Utils
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
-const { addToBatch } = require('./batchProcessor');
+const { addToBatch, shutdownBatchProcessor } = require('./batchProcessor');
 
 const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
 const { acquireIdempotencyLock, releaseIdempotencyLock } = require('./services/lockService');
@@ -41,11 +41,28 @@ const worker = new Worker('webhook-queue', async (job) => {
     }
 
     // 3. Update Status to PROCESSING
+// ... inside the worker processor ...
+
+    // 3. Create OR Update Status to PROCESSING (Upsert Logic)
     if (dbId) {
-        await Event.findByIdAndUpdate(dbId, { 
-            status: 'PROCESSING', 
-            $inc: { attemptCount: 1 } 
-        });
+        await Event.findByIdAndUpdate(
+            dbId, 
+            { 
+                // 👇 $setOnInsert ONLY triggers if the document doesn't exist yet (1st attempt)
+                $setOnInsert: {
+                    _id: dbId, // Explicitly set the ID we generated in the API
+                    traceId: tid,
+                    source: job.data.source || 'API',
+                    payload: payload,
+                    url: url,
+                    deliverySemantics: deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
+                },
+                // 👇 $set and $inc trigger every time (including retries)
+                $set: { status: 'PROCESSING' },
+                $inc: { attemptCount: 1 } 
+            },
+            { upsert: true, new: true } // Upsert creates the doc if missing
+        );
     }
 
     console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
@@ -144,9 +161,31 @@ console.log(chalk.magenta(figlet.textSync('Worker Node')));
 console.log(chalk.yellow.bold('\n🔸 BACKGROUND WORKER ACTIVE 🔸'));
 // ... (rest of your logs)
 
-// --- 🛑 SHUTDOWN ---
-process.on('SIGINT', async () => {
-    await worker.close();
-    await mongoose.connection.close();
-    process.exit(0);
-});
+// --- 🛑 GRACEFUL SHUTDOWN ---
+async function gracefulShutdown(signal) {
+    console.log(chalk.yellow.bold(`\n🛑 Received ${signal}. Starting graceful shutdown...`));
+    
+    try {
+        // 1. Stop accepting new jobs from Redis immediately
+        console.log(chalk.gray('1. Pausing BullMQ Worker...'));
+        await worker.close(); 
+        
+        // 2. 🚨 THE FIX: Flush the remaining items in the Batch Processor buffer to MongoDB
+        console.log(chalk.gray('2. Flushing Batch Processor Buffer...'));
+        await shutdownBatchProcessor();
+        
+        // 3. Safely disconnect from MongoDB ONLY AFTER the buffer is flushed
+        console.log(chalk.gray('3. Closing MongoDB Connection...'));
+        await mongoose.connection.close();
+        
+        console.log(chalk.green('✅ Shutdown complete. Goodbye!'));
+        process.exit(0);
+    } catch (err) {
+        console.error(chalk.red('💥 Error during shutdown:'), err);
+        process.exit(1);
+    }
+}
+
+// Listen for both Ctrl+C (Local) and Docker/Kubernetes termination signals
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

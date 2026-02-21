@@ -9,6 +9,7 @@ const figlet = require('figlet');
 require('dotenv').config();
 const Event = require('./src/models/Event'); 
 const express = require('express');
+const mongoose = require('mongoose');
 const http = require('http'); 
 const { Server } = require('socket.io'); 
 const { addToQueue, myQueue } = require('./src/queue');
@@ -112,6 +113,7 @@ app.post('/api/events', validateApiKey, async (req, res) => {
     const jobData = req.body;
 
     try {
+        // --- RESTORED FEATURE 1 & 2: Fast Redis Idempotency Check ---
         if (idempotencyKey && !forceRetry) {
             const key = `idempotency:${idempotencyKey}`;
             const exists = await redis.get(key);
@@ -125,35 +127,35 @@ app.post('/api/events', validateApiKey, async (req, res) => {
             }
         }
 
-        const eventLog = new Event({
-            traceId: traceId,
-            source: 'API_KEY_USER', 
-            payload: jobData,
-            url: jobData.url,
-            status: 'PENDING',
-            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
-        });
-        await eventLog.save(); 
+        // 1. Generate MongoDB ID synchronously (Zero network delay!)
+        const generatedDbId = new mongoose.Types.ObjectId();
         
-        console.log(`[Trace: ${traceId}] 💾 Job saved. ID: ${eventLog._id}`);
+        console.log(`[Trace: ${traceId}] 📦 Job Queued to Redis. Mongo ID reserved: ${generatedDbId}`);
 
+        // 2. Push directly to Redis (BullMQ is extremely fast)
+        // Notice: We do NOT pass idempotencyKey as the jobId here if forceRetry is true, 
+        // because BullMQ would block the force retry. We just let BullMQ use the dbId.
         await addToQueue({ 
             ...jobData, 
-            dbId: eventLog._id,
+            dbId: generatedDbId, 
             traceId,
+            source: 'API_KEY_USER', 
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
-        });
+        },forceRetry ? null : idempotencyKey);
 
+        // --- RESTORED LOGIC: Set the lock in Redis manually ---
         if (idempotencyKey) {
-            await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify({ id: eventLog._id }), 'EX', 86400);
+            await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify({ id: generatedDbId }), 'EX', 86400);
         }
         
-        io.emit('job-update', { id: eventLog._id, status: 'Pending', data: jobData, traceId });
+        // 3. Emit real-time update
+        io.emit('job-update', { id: generatedDbId, status: 'Pending', data: jobData, traceId });
         
+        // 4. Respond to client immediately
         res.status(202).json({ 
             status: 'accepted', 
             message: 'Job pushed to queue', 
-            id: eventLog._id,
+            id: generatedDbId,
             traceId 
         });
 
