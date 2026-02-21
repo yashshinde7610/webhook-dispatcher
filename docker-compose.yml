@@ -30,8 +30,8 @@ services:
       - MONGO_URI=mongodb://mongo:27017/webhook-db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - WEBHOOK_SECRET=my_super_secret_key_123
-      - API_KEY=architect-secret-123 
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET} # 👈 Pulls from .env
+      - API_KEY=${API_KEY}               # 👈 Pulls from .env
     depends_on:
       - mongo
       - redis
@@ -44,7 +44,7 @@ services:
       - MONGO_URI=mongodb://mongo:27017/webhook-db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - WEBHOOK_SECRET=my_super_secret_key_123
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET} # 👈 Pulls from .env
     depends_on:
       - mongo
       - redis

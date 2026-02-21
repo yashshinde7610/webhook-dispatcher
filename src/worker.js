@@ -33,13 +33,6 @@ const worker = new Worker('webhook-queue', async (job) => {
         console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown semantics: ${deliverySemantics}`);
     }
 
-    // 2. Idempotency Check
-    const isLocked = await acquireIdempotencyLock(redis, dbId);
-    if (!isLocked) {
-        console.warn(`[Trace: ${tid}] 🔄 Duplicate Job Detected. Skipping.`);
-        return { status: 'skipped', reason: 'Duplicate Job' };
-    }
-
     // 3. Update Status to PROCESSING
 // ... inside the worker processor ...
 
@@ -65,8 +58,9 @@ const worker = new Worker('webhook-queue', async (job) => {
         );
     }
 
-    console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
-
+    if (process.env.NODE_ENV !== 'production') {
+        console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
+    }
     try {
         // 4. Circuit Breaker Check
         if (await getCircuitStatus(url) === 'OPEN') {
@@ -75,6 +69,7 @@ const worker = new Worker('webhook-queue', async (job) => {
 
         // 5. Prepare & Send Request
         const signature = createHmacSignature(payload, process.env.WEBHOOK_SECRET);
+
         const response = await axios.post(url, payload, {
             headers: { 
                 'X-Signature': signature, 
@@ -85,7 +80,9 @@ const worker = new Worker('webhook-queue', async (job) => {
 
         // 6. Handle Success
         await recordSuccess(url);
+        if (process.env.NODE_ENV !== 'production') {
         console.log(`[Trace: ${tid}] ✅ Success: ${response.status}`);
+    }
 
         if (dbId) {
             addToBatch({
@@ -104,7 +101,6 @@ const worker = new Worker('webhook-queue', async (job) => {
 
     } catch (error) {
         // 7. Handle Failure
-        await releaseIdempotencyLock(redis, dbId); // Allow retries
 
         const type = classifyError(error);
         const msg = error.message || String(error);
