@@ -112,46 +112,49 @@ app.post('/api/events', validateApiKey, async (req, res) => {
     const forceRetry = req.headers['x-force-retry'] === 'true';
     const jobData = req.body;
 
-    try {
-        // --- RESTORED FEATURE 1 & 2: Fast Redis Idempotency Check ---
-        if (idempotencyKey && !forceRetry) {
+        try {
+        // 1. Generate MongoDB ID synchronously FIRST
+        const generatedDbId = new mongoose.Types.ObjectId();
+
+        // 2. ⚡ ATOMIC Idempotency Lock (Fixes TOCTOU Race Condition)
+        if (idempotencyKey) {
             const key = `idempotency:${idempotencyKey}`;
-            const exists = await redis.get(key);
-            if (exists) {
-                console.warn(`[Trace: ${traceId}] 🛑 Idempotency Block`);
-                return res.status(409).json({ 
-                    error: 'Conflict', 
-                    message: 'Event already processed', 
-                    traceId 
-                });
+            const lockPayload = JSON.stringify({ id: generatedDbId });
+
+            if (!forceRetry) {
+                // 'NX' ensures this ONLY writes if the key does not exist.
+                // It is a single atomic operation evaluated inside the Redis engine.
+                const acquired = await redis.set(key, lockPayload, 'EX', 300, 'NX');
+                
+                if (!acquired) {
+                    console.warn(`[Trace: ${traceId}] 🛑 Atomic Idempotency Block (Race condition averted)`);
+                    return res.status(409).json({ 
+                        error: 'Conflict', 
+                        message: 'Event already processed', 
+                        traceId 
+                    });
+                }
+            } else {
+                // If forcing a retry, we overwrite the lock without 'NX'
+                await redis.set(key, lockPayload, 'EX', 300);
             }
         }
-
-        // 1. Generate MongoDB ID synchronously (Zero network delay!)
-        const generatedDbId = new mongoose.Types.ObjectId();
         
         console.log(`[Trace: ${traceId}] 📦 Job Queued to Redis. Mongo ID reserved: ${generatedDbId}`);
 
-        // 2. Push directly to Redis (BullMQ is extremely fast)
-        // Notice: We do NOT pass idempotencyKey as the jobId here if forceRetry is true, 
-        // because BullMQ would block the force retry. We just let BullMQ use the dbId.
+        // 3. Push directly to Redis (BullMQ is extremely fast)
         await addToQueue({ 
             ...jobData, 
             dbId: generatedDbId, 
             traceId,
             source: 'API_KEY_USER', 
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
-        },forceRetry ? null : idempotencyKey);
+        }); 
 
-        // --- RESTORED LOGIC: Set the lock in Redis manually ---
-        if (idempotencyKey) {
-            await redis.set(`idempotency:${idempotencyKey}`, JSON.stringify({ id: generatedDbId }), 'EX', 86400);
-        }
-        
-        // 3. Emit real-time update
+        // 4. Emit real-time update
         io.emit('job-update', { id: generatedDbId, status: 'Pending', data: jobData, traceId });
         
-        // 4. Respond to client immediately
+        // 5. Respond to client immediately
         res.status(202).json({ 
             status: 'accepted', 
             message: 'Job pushed to queue', 
