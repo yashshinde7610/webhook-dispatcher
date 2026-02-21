@@ -1,10 +1,13 @@
 // src/batchProcessor.js
 const Event = require('./models/Event'); 
+const redis = require('./redis'); // 👈 ADDED: Import Redis for durable fallback
 const chalk = require('chalk');
 
 // --- OS CONFIGURATION ---
-const BATCH_SIZE = 100;       // Flush when buffer holds 100 items
-const FLUSH_INTERVAL = 2000;  // Flush every 2 seconds max latency
+const BATCH_SIZE = 100;       
+const FLUSH_INTERVAL = 2000;  
+const MAX_BUFFER_SIZE = 5000; // 🚨 OOM PROTECTION: Max items allowed in RAM
+const REDIS_DLQ_KEY = 'webhook:mongo_overflow_dlq';
 
 let writeBuffer = [];
 let isFlushing = false;
@@ -12,23 +15,61 @@ let flushInterval = null;
 
 // --- ⚡ ATOMIC FLUSH LOGIC ---
 async function flushBuffer() {
-    // 1. Concurrency Lock: Prevent overlapping flushes
-    if (isFlushing || writeBuffer.length === 0) return;
+    // 1. Concurrency Lock
+    if (isFlushing) return;
     isFlushing = true;
 
-    // 2. Thread-Safe Extraction: Empty the buffer synchronously
+    // 🟢 2. SELF-HEALING RECOVERY: Drain Redis DLQ if DB is up & memory is clear
+    if (writeBuffer.length < BATCH_SIZE) {
+        try {
+            const dlqSize = await redis.llen(REDIS_DLQ_KEY);
+            if (dlqSize > 0) {
+                const toRecover = Math.min(dlqSize, BATCH_SIZE);
+                const pipeline = redis.pipeline();
+                
+                // RPOP pulls oldest items first (FIFO)
+                for (let i = 0; i < toRecover; i++) {
+                    pipeline.rpop(REDIS_DLQ_KEY);
+                }
+                
+                const results = await pipeline.exec();
+                const recoveredItems = [];
+                
+                results.forEach(res => {
+                    if (res[1]) {
+                        try {
+                            recoveredItems.push(JSON.parse(res[1]));
+                        } catch (parseErr) {
+                            console.error(chalk.red('⚠️ [Buffer] Corrupted JSON in Redis DLQ'), parseErr);
+                        }
+                    }
+                });
+
+                if (recoveredItems.length > 0) {
+                    console.log(chalk.cyan(`♻️ [Buffer] Recovered ${recoveredItems.length} items from Redis DLQ.`));
+                    writeBuffer.unshift(...recoveredItems);
+                }
+            }
+        } catch (dlqErr) {
+            console.error(chalk.red(`⚠️ [Buffer] Failed to read from Redis DLQ:`), dlqErr.message);
+        }
+    }
+
+    // Exit early if nothing to write
+    if (writeBuffer.length === 0) {
+        isFlushing = false;
+        return;
+    }
+
+    // 3. Thread-Safe Extraction
     const currentBatch = writeBuffer.splice(0, writeBuffer.length);
 
-    // 3. 🛡️ RESTORED DEFENSIVE GUARD
+    // 4. Defensive Guards
     currentBatch.forEach(item => {
-        // If finalHttpStatus is accidentally a string (ENOTFOUND etc)
         if (typeof item.finalHttpStatus === 'string' && item.finalHttpStatus.trim() !== '') {
-            console.warn(`[Buffer] coercing string finalHttpStatus -> errorCode for dbId=${item.dbId}:`, item.finalHttpStatus);
             item.errorCode = item.errorCode || String(item.finalHttpStatus);
             item.finalHttpStatus = null;
         }
-
-        // If worker accidentally sent httpStatus instead
         if (typeof item.httpStatus === 'string' && item.httpStatus.trim() !== '') {
             const n = Number(item.httpStatus);
             if (Number.isFinite(n)) {
@@ -42,9 +83,7 @@ async function flushBuffer() {
     });
 
     try {
-        console.log(`💾 [Buffer] Flushing ${currentBatch.length} records to DB...`);
-
-        // 4. RESTORED PAYLOAD: Build bulk ops for final status and logs
+        // 5. Build bulk ops & execute
         const ops = currentBatch.map(item => ({
             updateOne: {
                 filter: { _id: item.dbId },
@@ -61,56 +100,62 @@ async function flushBuffer() {
             }
         }));
 
-        // ordered: false is crucial. If one doc fails validation, the rest still save.
         await Event.bulkWrite(ops, { ordered: false });
-        console.log(`✅ [Buffer] Batch Write Complete.`);
+        console.log(`✅ [Buffer] Batch Write Complete (${currentBatch.length} records).`);
 
     } catch (err) {
-        // 5. 🚨 THE BULLETPROOF ERROR HANDLER
         if (err.name === 'MongoBulkWriteError' && err.writeErrors) {
-            // POISON PILL DETECTED: 
-            console.error(chalk.red(`⚠️ [Buffer] Dropping ${err.writeErrors.length} malformed documents to prevent infinite loop.`));
+            console.error(chalk.red(`⚠️ [Buffer] Dropping ${err.writeErrors.length} malformed documents to prevent loop.`));
         } else {
-            // TRANSIENT ERROR DETECTED: 
-            console.log(chalk.yellow(`🔄 [Buffer] Network blip. Re-queueing batch of ${currentBatch.length} items.`));
-            writeBuffer.unshift(...currentBatch);
+            console.log(chalk.yellow(`🔄 [Buffer] Network blip. Handling ${currentBatch.length} items.`));
+            
+            // 🚨 THE FIX: OOM TIMEBOMB PROTECTION
+            if (writeBuffer.length + currentBatch.length > MAX_BUFFER_SIZE) {
+                console.error(chalk.red.bold(`🚨 [Buffer] OOM PROTECTION TRIGGERED: Buffer full! Overflowing to Redis DLQ!`));
+                try {
+                    const serializedBatch = currentBatch.map(item => JSON.stringify(item));
+                    // LPUSH adds to the top of the list, keeping our FIFO flow intact
+                    await redis.lpush(REDIS_DLQ_KEY, ...serializedBatch);
+                    console.log(chalk.yellow(`📦 [Buffer] Saved ${currentBatch.length} items to Redis DLQ safely.`));
+                } catch (redisErr) {
+                    console.error(chalk.bgRed.white(`💀 [Buffer] FATAL: Redis is down too! Force keeping in memory.`), redisErr.message);
+                    // Catastrophic failure: Both Mongo and Redis down. Retain in memory as a desperate last resort.
+                    writeBuffer.unshift(...currentBatch);
+                }
+            } else {
+                // Safe to keep in RAM
+                writeBuffer.unshift(...currentBatch);
+            }
         }
     } finally {
-        isFlushing = false; // Release the lock
+        isFlushing = false; 
     }
 }
 
 // --- 📥 ADD TO BATCH ---
 function addToBatch(data) {
     writeBuffer.push(data);
-    
-    // Force an immediate flush if traffic spikes massively
-    if (writeBuffer.length >= BATCH_SIZE) {
-        flushBuffer();
-    }
+    if (writeBuffer.length >= BATCH_SIZE) flushBuffer();
 }
 
-// --- 🟢 RESTORED AUTO-START TIMER ---
+// --- 🟢 AUTO-START TIMER ---
 flushInterval = setInterval(() => {
     if (writeBuffer.length > 0) flushBuffer();
 }, FLUSH_INTERVAL);
 
-// --- 🛑 GRACEFUL SHUTDOWN (Race-Condition Free) ---
+// --- 🛑 GRACEFUL SHUTDOWN ---
 async function shutdownBatchProcessor() {
     console.log(chalk.yellow('⚠️ [Buffer] Shutdown signal received. Final flush...'));
     
-    // Stop the interval timer
     if (flushInterval) {
         clearInterval(flushInterval);
         flushInterval = null;
     }
 
-    // Await any currently running flush cycle to finish
     while (isFlushing) {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // Flush anything that accumulated during the wait
     if (writeBuffer.length > 0) {
         await flushBuffer();
     }
