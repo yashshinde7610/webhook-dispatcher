@@ -26,9 +26,10 @@ async function recordFailure(url) {
     // 1. Increment failure count
     const count = await redis.incr(countKey);
 
-    // 2. If this is the first failure, set the expiry window (1 min)
+    // 2. If this is the first failure, extend the window to outlast the break
+    // duration so we remember this endpoint was failing recently.
     if (count === 1) {
-        await redis.expire(countKey, FAILURE_WINDOW);
+        await redis.expire(countKey, FAILURE_WINDOW + BREAK_DURATION);
     }
 
     // 3. Check Threshold
@@ -36,8 +37,12 @@ async function recordFailure(url) {
         console.warn(`🛡️  [CIRCUIT BREAKER] Tripped for: ${url}`);
         // Set "OPEN" state for the cooldown duration
         await redis.set(statusKey, 'OPEN', 'EX', BREAK_DURATION);
-        // Reset failure counter so we start fresh after cooldown
-        await redis.del(countKey);
+        // 🛡️ HALF-OPEN FIX: Set counter to threshold-1 instead of deleting.
+        // When the breaker expires, the very NEXT failure will instantly
+        // trip it again (proper half-open behavior) instead of allowing
+        // 5 more requests to bombard the downed server.
+        await redis.set(countKey, FAILURE_THRESHOLD - 1);
+        await redis.expire(countKey, FAILURE_WINDOW);
     }
 }
 

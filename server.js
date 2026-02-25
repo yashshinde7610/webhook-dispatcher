@@ -29,6 +29,16 @@ const app = express();
 const server = http.createServer(app); 
 const io = new Server(server); 
 
+// --- 🛡️ WEBSOCKET AUTH MIDDLEWARE ---
+// Prevents unauthenticated users from intercepting webhook payloads via WebSocket.
+io.use((socket, next) => {
+    const token = socket.handshake.auth.token;
+    if (token === process.env.API_KEY) {
+        return next();
+    }
+    return next(new Error('Authentication error: Invalid API Key'));
+});
+
 app.use(express.json());
 app.use(express.static('public')); 
 
@@ -135,14 +145,14 @@ app.post('/api/events', validateApiKey, async (req, res) => {
 
         try {
         // 1. Generate MongoDB ID synchronously FIRST
-        const generatedDbId = new mongoose.Types.ObjectId();
+        let generatedDbId = new mongoose.Types.ObjectId();
 
         // 2. ⚡ ATOMIC Idempotency Lock (Fixes TOCTOU Race Condition)
         if (idempotencyKey) {
             const key = `idempotency:${idempotencyKey}`;
-            const lockPayload = JSON.stringify({ id: generatedDbId });
 
             if (!forceRetry) {
+                const lockPayload = JSON.stringify({ id: generatedDbId });
                 // 'NX' ensures this ONLY writes if the key does not exist.
                 // It is a single atomic operation evaluated inside the Redis engine.
                 const acquired = await redis.set(key, lockPayload, 'EX', 300, 'NX');
@@ -156,8 +166,20 @@ app.post('/api/events', validateApiKey, async (req, res) => {
                     });
                 }
             } else {
-                // If forcing a retry, we overwrite the lock without 'NX'
-                await redis.set(key, lockPayload, 'EX', 300);
+                // 🛡️ FORCE-RETRY FIX: Reuse the original dbId from the existing lock
+                // so the retry traces back to the same DB record instead of creating
+                // an orphaned document with a brand new ObjectId.
+                const existingLock = await redis.get(key);
+                if (existingLock) {
+                    try {
+                        const parsed = JSON.parse(existingLock);
+                        if (parsed.id) {
+                            generatedDbId = new mongoose.Types.ObjectId(parsed.id);
+                        }
+                    } catch (_) { /* Lock corrupted, proceed with new ID */ }
+                }
+                // Refresh the lock TTL with the (possibly reused) ID
+                await redis.set(key, JSON.stringify({ id: generatedDbId }), 'EX', 300);
             }
         }
         

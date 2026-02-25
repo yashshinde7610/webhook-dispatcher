@@ -115,7 +115,7 @@ async function flushBuffer() {
             return op;
         });
 
-        await Event.bulkWrite(ops, { ordered: true });
+        await Event.bulkWrite(ops, { ordered: false });
         console.log(`✅ [Buffer] Batch Write Complete (${currentBatch.length} records).`);
 
     } catch (err) {

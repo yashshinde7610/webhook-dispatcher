@@ -23,7 +23,13 @@ const { addToBatch, shutdownBatchProcessor } = require('./batchProcessor');
 
 const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
 
-// --- 🔌 CONNECT MONGO ---
+// --- �️ SSRF PROTECTION ---
+// Prevents attackers from targeting internal infrastructure (localhost, cloud metadata, etc.)
+const isPrivateIP = (hostname) => {
+    return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|169\.254\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|\[::1\]|\[fc|\[fd)/.test(hostname);
+};
+
+// --- �🔌 CONNECT MONGO ---
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db')
     .then(() => console.log('✅ Worker connected to MongoDB'))
     .catch(err => console.error('❌ MongoDB Error:', err));
@@ -68,7 +74,16 @@ const worker = new Worker('webhook-queue', async (job) => {
             throw new Error('Circuit Breaker Open');
         }
 
-        // 5. Prepare & Send Request
+        // 5. SSRF Guard: Block requests to internal/private addresses
+        const target = new URL(url);
+        if (isPrivateIP(target.hostname)) {
+            throw Object.assign(
+                new Error(`SSRF Blocked: Cannot dispatch webhooks to internal address: ${target.hostname}`),
+                { ssrfBlocked: true }
+            );
+        }
+
+        // 6. Prepare & Send Request
         const signature = createHmacSignature(payload, process.env.WEBHOOK_SECRET);
 
         const response = await axios.post(url, payload, {
@@ -79,7 +94,7 @@ const worker = new Worker('webhook-queue', async (job) => {
             timeout: 5000 
         });
 
-        // 6. Handle Success
+        // 7. Handle Success
         await recordSuccess(url);
         if (process.env.NODE_ENV !== 'production') {
         console.log(`[Trace: ${tid}] ✅ Success: ${response.status}`);
@@ -101,7 +116,22 @@ const worker = new Worker('webhook-queue', async (job) => {
         return response.data;
 
     } catch (error) {
-        // 7. Handle Failure
+        // 8. Handle Failure
+
+        // SSRF attempts are PERMANENT — never retry
+        if (error.ssrfBlocked) {
+            console.error(`[Trace: ${tid}] 🛑 SSRF BLOCKED: ${error.message}`);
+            if (dbId) {
+                await addToBatch({
+                    dbId,
+                    status: 'FAILED_PERMANENT',
+                    failureType: 'PERMANENT',
+                    lastError: error.message,
+                    logEntry: { attempt: currentAttempt, status: null, response: error.message }
+                });
+            }
+            return { status: 'aborted', reason: 'SSRF Blocked' };
+        }
 
         const type = classifyError(error);
         const msg = error.message || String(error);
