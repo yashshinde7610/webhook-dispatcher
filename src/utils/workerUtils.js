@@ -1,5 +1,6 @@
 // src/utils/workerUtils.js
 const crypto = require('crypto');
+const stringify = require('json-stable-stringify');
 
 
 /**
@@ -19,7 +20,9 @@ function safeHttpStatus(val) {
  */
 function createHmacSignature(payload, secret) {
     if (!secret) throw new Error('❌ WEBHOOK_SECRET is missing in .env file');
-    return crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
+    // 🛡️ FIX: Use deterministic key-sorted stringify so HMAC is stable
+    // regardless of object key insertion order (V8 does not guarantee order).
+    return crypto.createHmac('sha256', secret).update(stringify(payload)).digest('hex');
 }
 
 /**

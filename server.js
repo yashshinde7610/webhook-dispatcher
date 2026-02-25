@@ -212,9 +212,15 @@ app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
             await existingJob.remove(); 
         }
 
+        // 🛡️ FIX: Explicitly pass top-level fields from the stored document.
+        // Spreading eventLog.payload here would flatten inner data to root,
+        // losing url/traceId/deliverySemantics and crashing the worker.
         await addToQueue({ 
-            ...eventLog.payload, 
-            dbId: eventLog._id 
+            url: eventLog.url,
+            payload: eventLog.payload,
+            dbId: eventLog._id,
+            traceId: eventLog.traceId,
+            deliverySemantics: eventLog.deliverySemantics
         });
 
         io.emit('job-update', { id: eventLog._id, status: 'Pending (Replay)', data: eventLog.payload });

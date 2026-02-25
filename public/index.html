@@ -71,6 +71,12 @@
     <div id="events"></div>
 
     <script>
+        // 🛡️ XSS PROTECTION: Escape third-party data before DOM injection.
+        // Webhook targets can return arbitrary HTML/JS in their responses.
+        const escapeHTML = (str) => String(str).replace(/[&<>'"]/g, 
+            tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag])
+        );
+
         const socket = io();
         const eventsContainer = document.getElementById('events');
         const connStatus = document.getElementById('connection-status');
@@ -119,11 +125,11 @@
 
             card.innerHTML = `
                 <div class="event-header">
-                    <span>ID: ${job.id.slice(-6)}</span>
-                    <span class="status-badge">${job.status}</span>
+                    <span>ID: ${escapeHTML(job.id.slice(-6))}</span>
+                    <span class="status-badge">${escapeHTML(job.status)}</span>
                 </div>
                 <div style="font-size: 0.8em; margin-bottom: 5px; color: #64748b;">${time}</div>
-                <pre>${dataPreview || 'Processing...'}</pre>
+                <pre>${escapeHTML(dataPreview || 'Processing...')}</pre>
                 ${actionButton}
             `;
 

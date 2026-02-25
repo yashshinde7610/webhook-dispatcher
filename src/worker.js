@@ -7,8 +7,15 @@ const figlet = require('figlet');
 const chalk = require('chalk');
 
 // Infrastructure
-const redis = require('./redis'); 
-const Event = require('./models/Event'); 
+const redis = require('./redis'); // App-level Redis (circuit breaker, DLQ, etc.)
+const Event = require('./models/Event');
+
+// 🛡️ DEDICATED CONNECTION: BullMQ must NOT share the app Redis instance.
+// BullMQ workers use blocking Redis commands that would deadlock non-blocking ops.
+const bullmqConnectionOptions = {
+    host: process.env.REDIS_HOST || '127.0.0.1',
+    port: Number(process.env.REDIS_PORT) || 6379
+}; 
 
 // Services & Utils
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
@@ -126,7 +133,7 @@ const worker = new Worker('webhook-queue', async (job) => {
         throw error; // Triggers BullMQ retry
     }
 }, {
-    connection: redis,
+    connection: bullmqConnectionOptions,
     concurrency: 50,
     limiter: { max: 50, duration: 1000 }
 });
@@ -167,6 +174,12 @@ async function gracefulShutdown(signal) {
         // 3. Safely disconnect from MongoDB ONLY AFTER the buffer is flushed
         console.log(chalk.gray('3. Closing MongoDB Connection...'));
         await mongoose.connection.close();
+
+        // 4. 🛡️ FIX: Close the app-level Redis connection LAST.
+        // The batch processor's shutdown may still need Redis for DLQ overflow.
+        // Closing it before this point would cause silent write failures.
+        console.log(chalk.gray('4. Closing Redis Connection...'));
+        await redis.quit();
         
         console.log(chalk.green('✅ Shutdown complete. Goodbye!'));
         process.exit(0);
