@@ -84,29 +84,38 @@ async function flushBuffer() {
 
     try {
         // 5. Build bulk ops & execute
-        const ops = currentBatch.map(item => ({
-            updateOne: {
-                filter: { 
-                    _id: item.dbId,
-                    // 🛡️ STATE MACHINE GUARD: Only overwrite status if no newer attempt
-                    // has already started. Prevents the Attempt-1-FAILED from clobbering
-                    // Attempt-2-PROCESSING that was written synchronously by the worker.
-                    ...(item.attemptCount != null ? { attemptCount: { $lte: item.attemptCount } } : {})
-                },
-                update: {
-                    $set: {
-                        status: item.status,
-                        finalHttpStatus: item.finalHttpStatus,
-                        failureType: item.failureType || null,
-                        lastError: item.lastError || null,
-                        errorCode: item.errorCode || null
-                    },
-                    ...(item.logEntry ? { $push: { logs: item.logEntry } } : {})
+        // ALL state transitions flow through this single ordered pipe.
+        // Because the writeBuffer is FIFO, PROCESSING is always written
+        // before COMPLETED/FAILED—no sync/async race condition possible.
+        const ops = currentBatch.map(item => {
+            const op = {
+                updateOne: {
+                    filter: { _id: item.dbId },
+                    update: {
+                        $set: {
+                            status: item.status,
+                            finalHttpStatus: item.finalHttpStatus,
+                            failureType: item.failureType || null,
+                            lastError: item.lastError || null,
+                            errorCode: item.errorCode || null
+                        },
+                        ...(item.logEntry ? { $push: { logs: item.logEntry } } : {})
+                    }
                 }
-            }
-        }));
+            };
 
-        await Event.bulkWrite(ops, { ordered: false });
+            // 🏗️ UPSERT SUPPORT: If the document doesn't exist yet (1st attempt),
+            // $setOnInsert creates it with the initial immutable fields.
+            if (item.upsert && item.initialData) {
+                op.updateOne.upsert = true;
+                op.updateOne.update.$setOnInsert = item.initialData;
+                op.updateOne.update.$inc = { attemptCount: 1 };
+            }
+
+            return op;
+        });
+
+        await Event.bulkWrite(ops, { ordered: true });
         console.log(`✅ [Buffer] Batch Write Complete (${currentBatch.length} records).`);
 
     } catch (err) {

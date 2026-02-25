@@ -32,29 +32,24 @@ const worker = new Worker('webhook-queue', async (job) => {
         console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown semantics: ${deliverySemantics}`);
     }
 
-    // 3. Update Status to PROCESSING
-// ... inside the worker processor ...
-
-    // 3. Create OR Update Status to PROCESSING (Upsert Logic)
+    // 3. Route PROCESSING state through the FIFO batch buffer.
+    // ALL state transitions (PROCESSING → COMPLETED/FAILED) flow through a single
+    // ordered pipe, eliminating the sync/async race condition entirely.
     if (dbId) {
-        await Event.findByIdAndUpdate(
-            dbId, 
-            { 
-                // 👇 $setOnInsert ONLY triggers if the document doesn't exist yet (1st attempt)
-                $setOnInsert: {
-                    _id: dbId, // Explicitly set the ID we generated in the API
-                    traceId: tid,
-                    source: job.data.source || 'API',
-                    payload: payload,
-                    url: url,
-                    deliverySemantics: deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
-                },
-                // 👇 $set and $inc trigger every time (including retries)
-                $set: { status: 'PROCESSING' },
-                $inc: { attemptCount: 1 } 
+        await addToBatch({
+            dbId,
+            status: 'PROCESSING',
+            upsert: true,
+            initialData: {
+                _id: dbId,
+                traceId: tid,
+                source: job.data.source || 'API',
+                payload: payload,
+                url: url,
+                deliverySemantics: deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
             },
-            { upsert: true, new: true } // Upsert creates the doc if missing
-        );
+            logEntry: { attempt: currentAttempt, status: 0, response: 'Processing started' }
+        });
     }
 
     if (process.env.NODE_ENV !== 'production') {
@@ -87,7 +82,6 @@ const worker = new Worker('webhook-queue', async (job) => {
             await addToBatch({
                 dbId,
                 status: 'COMPLETED',
-                attemptCount: currentAttempt,
                 httpStatus: safeHttpStatus(response.status),
                 logEntry: { 
                     attempt: currentAttempt, 
@@ -117,7 +111,6 @@ const worker = new Worker('webhook-queue', async (job) => {
             await addToBatch({
                 dbId,
                 status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
-                attemptCount: currentAttempt,
                 failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
                 httpStatus,
                 errorCode,
