@@ -86,7 +86,13 @@ async function flushBuffer() {
         // 5. Build bulk ops & execute
         const ops = currentBatch.map(item => ({
             updateOne: {
-                filter: { _id: item.dbId },
+                filter: { 
+                    _id: item.dbId,
+                    // 🛡️ STATE MACHINE GUARD: Only overwrite status if no newer attempt
+                    // has already started. Prevents the Attempt-1-FAILED from clobbering
+                    // Attempt-2-PROCESSING that was written synchronously by the worker.
+                    ...(item.attemptCount != null ? { attemptCount: { $lte: item.attemptCount } } : {})
+                },
                 update: {
                     $set: {
                         status: item.status,
@@ -132,8 +138,20 @@ async function flushBuffer() {
     }
 }
 
-// --- 📥 ADD TO BATCH ---
-function addToBatch(data) {
+// --- 📥 ADD TO BATCH (With Backpressure) ---
+async function addToBatch(data) {
+    // 🚨 BACKPRESSURE: If buffer is at capacity, divert directly to Redis DLQ
+    if (writeBuffer.length >= MAX_BUFFER_SIZE) {
+        try {
+            await redis.lpush(REDIS_DLQ_KEY, JSON.stringify(data));
+            console.log(chalk.yellow(`🚨 [Buffer] Backpressure: Diverted 1 item to Redis DLQ (buffer at ${MAX_BUFFER_SIZE} cap).`));
+        } catch (redisErr) {
+            console.error(chalk.bgRed.white(`💀 [Buffer] FATAL: Cannot divert to Redis DLQ!`), redisErr.message);
+            // Last resort: push to buffer anyway (prefer potential OOM over silent data drop)
+            writeBuffer.push(data);
+        }
+        return;
+    }
     writeBuffer.push(data);
     if (writeBuffer.length >= BATCH_SIZE) flushBuffer();
 }
@@ -158,6 +176,31 @@ async function shutdownBatchProcessor() {
 
     if (writeBuffer.length > 0) {
         await flushBuffer();
+    }
+
+    // 🛡️ SAFETY NET: If items remain after flush (Mongo was down), dump to Redis DLQ
+    // This prevents permanent data loss on shutdown during a database outage.
+    if (writeBuffer.length > 0) {
+        console.log(chalk.yellow(`⚠️ [Buffer] ${writeBuffer.length} items remain after flush. Dumping to Redis DLQ for recovery...`));
+        try {
+            const serialized = writeBuffer.map(item => JSON.stringify(item));
+            await redis.lpush(REDIS_DLQ_KEY, ...serialized);
+            console.log(chalk.green(`✅ [Buffer] Safely persisted ${writeBuffer.length} items to Redis DLQ.`));
+            writeBuffer = [];
+        } catch (redisErr) {
+            console.error(chalk.bgRed.white(`💀 [Buffer] FATAL: Could not persist to Redis! ${writeBuffer.length} items at risk.`), redisErr.message);
+            // Last resort: dump to disk
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const dumpPath = path.join(__dirname, '..', `buffer_dump_${Date.now()}.json`);
+                fs.writeFileSync(dumpPath, JSON.stringify(writeBuffer, null, 2));
+                console.log(chalk.yellow(`📁 [Buffer] Emergency disk dump: ${dumpPath}`));
+                writeBuffer = [];
+            } catch (diskErr) {
+                console.error(chalk.bgRed.white(`💀 [Buffer] CATASTROPHIC: Disk dump also failed! Data lost.`), diskErr.message);
+            }
+        }
     }
 }
 

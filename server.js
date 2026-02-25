@@ -15,6 +15,15 @@ const { Server } = require('socket.io');
 const { addToQueue, myQueue } = require('./src/queue');
 const { QueueEvents } = require('bullmq'); 
 const { applyFieldMask } = require('./src/utils/fieldMask'); 
+const Joi = require('joi');
+
+// --- 🛡️ INPUT VALIDATION SCHEMA ---
+const eventSchema = Joi.object({
+    url: Joi.string().uri({ scheme: ['http', 'https'] }).required()
+        .messages({ 'string.uri': 'url must be a valid HTTP/HTTPS URL' }),
+    payload: Joi.object().required()
+        .messages({ 'any.required': 'payload is required and must be a JSON object' })
+}).options({ allowUnknown: true }); // Allow extra fields to pass through
 
 const app = express();
 const server = http.createServer(app); 
@@ -108,6 +117,18 @@ app.post('/api/events', validateApiKey, async (req, res) => {
 
     console.log(`[Trace: ${traceId}] 🔍 Ingress: New Request`); 
     
+    // 🛡️ SCHEMA VALIDATION: Reject poison pills before they touch Redis/BullMQ
+    const { error: validationError } = eventSchema.validate(req.body);
+    if (validationError) {
+        console.warn(`[Trace: ${traceId}] 🛑 Validation Failed: ${validationError.message}`);
+        return res.status(400).json({
+            error: 'Bad Request',
+            message: validationError.details[0].message,
+            code: 'VALIDATION_FAILED',
+            traceId
+        });
+    }
+
     const idempotencyKey = req.headers['idempotency-key'];
     const forceRetry = req.headers['x-force-retry'] === 'true';
     const jobData = req.body;

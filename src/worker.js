@@ -84,9 +84,10 @@ const worker = new Worker('webhook-queue', async (job) => {
     }
 
         if (dbId) {
-            addToBatch({
+            await addToBatch({
                 dbId,
                 status: 'COMPLETED',
+                attemptCount: currentAttempt,
                 httpStatus: safeHttpStatus(response.status),
                 logEntry: { 
                     attempt: currentAttempt, 
@@ -113,9 +114,10 @@ const worker = new Worker('webhook-queue', async (job) => {
         console.error(`[Trace: ${tid}] ⚠️ Failed: ${type} (${msg})`);
 
         if (dbId) {
-            addToBatch({
+            await addToBatch({
                 dbId,
                 status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
+                attemptCount: currentAttempt,
                 failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
                 httpStatus,
                 errorCode,
