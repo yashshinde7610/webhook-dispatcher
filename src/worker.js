@@ -1,5 +1,19 @@
 // src/worker.js
 require('dotenv').config();
+
+// --- 🛡️ FAIL-FAST ENV VALIDATION ---
+// Crash at boot — not after the first job tries to sign a payload.
+// WEBHOOK_SECRET is used by createHmacSignature() on every single job.
+// API_KEY is optional here (only the API server needs it), but
+// WEBHOOK_SECRET is non-negotiable for the worker.
+const REQUIRED_ENV = ['WEBHOOK_SECRET'];
+const missing = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missing.length > 0) {
+    console.error(`❌ FATAL: Missing required environment variables: ${missing.join(', ')}`);
+    console.error('   Set them in .env or your deployment config before starting the worker.');
+    process.exit(1);
+}
+
 const { Worker } = require('bullmq'); 
 const mongoose = require('mongoose');
 const axios = require('axios');
@@ -19,17 +33,94 @@ const bullmqConnectionOptions = {
 
 // Services & Utils
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
-const { addToBatch, shutdownBatchProcessor } = require('./batchProcessor');
+const { persistState } = require('./batchProcessor');
 
+const dns = require('dns');
+const net = require('net');
 const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
 
-// --- �️ SSRF PROTECTION ---
-// Prevents attackers from targeting internal infrastructure (localhost, cloud metadata, etc.)
-const isPrivateIP = (hostname) => {
-    return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|169\.254\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|\[::1\]|\[fc|\[fd)/.test(hostname);
-};
+// --- 🛡️ SSRF PROTECTION (DNS-Resolution Based) ---
+//
+// WHY NOT A REGEX?
+//   A regex on the raw hostname is trivially bypassed:
+//     • DNS aliases:      http://127.0.0.1.nip.io  → resolves to 127.0.0.1
+//     • Octal encoding:   http://0177.0.0.1        → 127.0.0.1
+//     • Decimal encoding:  http://2130706433        → 127.0.0.1
+//     • IPv6 shorthand:   http://[::ffff:127.0.0.1]
+//     • DNS rebinding:    first lookup = public IP, second = 127.0.0.1
+//
+// THE FIX:
+//   1. Resolve the hostname through the OS DNS resolver.
+//   2. Check the **resolved IP** against RFC-1918 / RFC-5735 / RFC-4193 ranges.
+//   This makes the bypass surface the DNS resolver itself, not our string checks.
 
-// --- �🔌 CONNECT MONGO ---
+/**
+ * Returns true if the given IP (v4 or v6) belongs to a private, loopback,
+ * link-local, or otherwise non-routable address range.
+ */
+function isPrivateIP(ip) {
+    // IPv4-mapped IPv6 (::ffff:10.0.0.1) — extract the v4 portion
+    if (ip.startsWith('::ffff:')) {
+        ip = ip.slice(7);
+    }
+
+    if (net.isIPv4(ip)) {
+        const parts = ip.split('.').map(Number);
+        const [a, b] = parts;
+
+        if (a === 0)   return true;                          // 0.0.0.0/8   (current network)
+        if (a === 10)  return true;                          // 10.0.0.0/8  (RFC-1918)
+        if (a === 127) return true;                          // 127.0.0.0/8 (loopback)
+        if (a === 169 && b === 254) return true;             // 169.254.0.0/16 (link-local)
+        if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12 (RFC-1918)
+        if (a === 192 && b === 168) return true;             // 192.168.0.0/16 (RFC-1918)
+        if (a === 100 && b >= 64 && b <= 127) return true;   // 100.64.0.0/10 (CGN / shared)
+        if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmarking)
+
+        return false;
+    }
+
+    if (net.isIPv6(ip)) {
+        const normalized = ip.toLowerCase();
+        if (normalized === '::1') return true;                // IPv6 loopback
+        if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true; // ULA (RFC-4193)
+        if (normalized.startsWith('fe80')) return true;       // Link-local
+
+        return false;
+    }
+
+    // Unrecognized format — block by default (fail-closed)
+    return true;
+}
+
+/**
+ * Resolve a hostname and reject it if the resulting IP is private.
+ * Throws with { ssrfBlocked: true } on violation.
+ */
+async function assertNotPrivate(hostname) {
+    // If the hostname is already a raw IP literal, check it directly
+    if (net.isIP(hostname)) {
+        if (isPrivateIP(hostname)) {
+            throw Object.assign(
+                new Error(`SSRF Blocked: Target resolves to private IP: ${hostname}`),
+                { ssrfBlocked: true }
+            );
+        }
+        return;
+    }
+
+    // Resolve through OS DNS (respects /etc/hosts, systemd-resolved, etc.)
+    const { address } = await dns.promises.lookup(hostname);
+
+    if (isPrivateIP(address)) {
+        throw Object.assign(
+            new Error(`SSRF Blocked: ${hostname} resolved to private IP ${address}`),
+            { ssrfBlocked: true }
+        );
+    }
+}
+
+// --- 🔌 CONNECT MONGO ---
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db')
     .then(() => console.log('✅ Worker connected to MongoDB'))
     .catch(err => console.error('❌ MongoDB Error:', err));
@@ -45,11 +136,10 @@ const worker = new Worker('webhook-queue', async (job) => {
         console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown semantics: ${deliverySemantics}`);
     }
 
-    // 3. Route PROCESSING state through the FIFO batch buffer.
-    // ALL state transitions (PROCESSING → COMPLETED/FAILED) flow through a single
-    // ordered pipe, eliminating the sync/async race condition entirely.
+    // 3. Persist PROCESSING state directly to MongoDB (atomic write).
+    //    If Mongo is down this throws, and BullMQ retries the whole job.
     if (dbId) {
-        await addToBatch({
+        await persistState({
             dbId,
             status: 'PROCESSING',
             upsert: true,
@@ -74,14 +164,10 @@ const worker = new Worker('webhook-queue', async (job) => {
             throw new Error('Circuit Breaker Open');
         }
 
-        // 5. SSRF Guard: Block requests to internal/private addresses
+        // 5. SSRF Guard: Resolve hostname via DNS, then check the resolved IP.
+        //    Defeats nip.io aliases, octal/hex encoding, DNS rebinding, etc.
         const target = new URL(url);
-        if (isPrivateIP(target.hostname)) {
-            throw Object.assign(
-                new Error(`SSRF Blocked: Cannot dispatch webhooks to internal address: ${target.hostname}`),
-                { ssrfBlocked: true }
-            );
-        }
+        await assertNotPrivate(target.hostname);
 
         // 6. Prepare & Send Request
         const signature = createHmacSignature(payload, process.env.WEBHOOK_SECRET);
@@ -91,7 +177,15 @@ const worker = new Worker('webhook-queue', async (job) => {
                 'X-Signature': signature, 
                 'Content-Type': 'application/json' 
             },
-            timeout: 5000 
+            timeout: 5000,
+
+            // 🛡️ OOM PROTECTION: Cap the response body Axios will buffer.
+            // Without these, a malicious target can respond with an infinite
+            // stream (or a 5 GB body) and Axios will happily buffer it all
+            // into the V8 heap until the process crashes.
+            maxContentLength:  1 * 1024 * 1024,   // 1 MB — we only need the status + small body
+            maxBodyLength:     1 * 1024 * 1024,    // 1 MB — outbound safety (shouldn't matter for POST payloads we control)
+            maxRedirects:      0,                  // Webhook targets should not redirect; prevents open-redirect chains
         });
 
         // 7. Handle Success
@@ -101,7 +195,7 @@ const worker = new Worker('webhook-queue', async (job) => {
     }
 
         if (dbId) {
-            await addToBatch({
+            await persistState({
                 dbId,
                 status: 'COMPLETED',
                 httpStatus: safeHttpStatus(response.status),
@@ -122,7 +216,7 @@ const worker = new Worker('webhook-queue', async (job) => {
         if (error.ssrfBlocked) {
             console.error(`[Trace: ${tid}] 🛑 SSRF BLOCKED: ${error.message}`);
             if (dbId) {
-                await addToBatch({
+                await persistState({
                     dbId,
                     status: 'FAILED_PERMANENT',
                     failureType: 'PERMANENT',
@@ -145,7 +239,7 @@ const worker = new Worker('webhook-queue', async (job) => {
         console.error(`[Trace: ${tid}] ⚠️ Failed: ${type} (${msg})`);
 
         if (dbId) {
-            await addToBatch({
+            await persistState({
                 dbId,
                 status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
                 failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
@@ -193,22 +287,18 @@ async function gracefulShutdown(signal) {
     console.log(chalk.yellow.bold(`\n🛑 Received ${signal}. Starting graceful shutdown...`));
     
     try {
-        // 1. Stop accepting new jobs from Redis immediately
-        console.log(chalk.gray('1. Pausing BullMQ Worker...'));
+        // 1. Stop accepting new jobs from Redis immediately.
+        //    worker.close() waits for in-flight jobs to finish, so all
+        //    awaited persistState() calls complete before we proceed.
+        console.log(chalk.gray('1. Closing BullMQ Worker (draining in-flight jobs)...'));
         await worker.close(); 
         
-        // 2. 🚨 THE FIX: Flush the remaining items in the Batch Processor buffer to MongoDB
-        console.log(chalk.gray('2. Flushing Batch Processor Buffer...'));
-        await shutdownBatchProcessor();
-        
-        // 3. Safely disconnect from MongoDB ONLY AFTER the buffer is flushed
-        console.log(chalk.gray('3. Closing MongoDB Connection...'));
+        // 2. Disconnect MongoDB (no in-memory buffer to flush anymore)
+        console.log(chalk.gray('2. Closing MongoDB Connection...'));
         await mongoose.connection.close();
 
-        // 4. 🛡️ FIX: Close the app-level Redis connection LAST.
-        // The batch processor's shutdown may still need Redis for DLQ overflow.
-        // Closing it before this point would cause silent write failures.
-        console.log(chalk.gray('4. Closing Redis Connection...'));
+        // 3. Close the app-level Redis connection last
+        console.log(chalk.gray('3. Closing Redis Connection...'));
         await redis.quit();
         
         console.log(chalk.green('✅ Shutdown complete. Goodbye!'));

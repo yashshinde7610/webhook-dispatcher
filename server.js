@@ -7,6 +7,17 @@ const chalk = require('chalk');
 const figlet = require('figlet'); 
 
 require('dotenv').config();
+
+// --- 🛡️ FAIL-FAST ENV VALIDATION ---
+// Crash at boot — not after 10,000 requests have been accepted.
+const REQUIRED_ENV = ['API_KEY'];
+const missing = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missing.length > 0) {
+    console.error(`❌ FATAL: Missing required environment variables: ${missing.join(', ')}`);
+    console.error('   Set them in .env or your deployment config before starting the server.');
+    process.exit(1);
+}
+
 const Event = require('./src/models/Event'); 
 const express = require('express');
 const mongoose = require('mongoose');
@@ -28,6 +39,30 @@ const eventSchema = Joi.object({
 const app = express();
 const server = http.createServer(app); 
 const io = new Server(server); 
+
+// --- 🛡️ ATOMIC FORCE-RETRY LUA SCRIPT ---
+// This runs inside Redis's single-threaded Lua engine, so the entire
+// read → claim → refresh sequence is indivisible. No TOCTOU possible.
+//
+// KEYS[1] = idempotency key       (e.g. "idempotency:abc-123")
+// KEYS[2] = short-lived claim key (e.g. "idempotency:abc-123:retry_claim")
+// ARGV[1] = new lock payload      (JSON with the dbId)
+// ARGV[2] = main lock TTL         (seconds)
+// ARGV[3] = claim lock TTL        (seconds, short — just to block overlapping retries)
+//
+// Returns:
+//   existing lock value (string) → caller won, reuse the dbId inside
+//   ""                           → caller won, no prior lock existed
+//   nil                          → caller lost, another retry is in progress → 409
+const FORCE_RETRY_LUA = `
+local claimed = redis.call('SET', KEYS[2], '1', 'NX', 'EX', tonumber(ARGV[3]))
+if not claimed then
+    return nil
+end
+local existing = redis.call('GET', KEYS[1]) or ''
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+return existing
+`;
 
 // --- 🛡️ WEBSOCKET AUTH MIDDLEWARE ---
 // Prevents unauthenticated users from intercepting webhook payloads via WebSocket.
@@ -166,20 +201,40 @@ app.post('/api/events', validateApiKey, async (req, res) => {
                     });
                 }
             } else {
-                // 🛡️ FORCE-RETRY FIX: Reuse the original dbId from the existing lock
-                // so the retry traces back to the same DB record instead of creating
-                // an orphaned document with a brand new ObjectId.
-                const existingLock = await redis.get(key);
-                if (existingLock) {
+                // 🛡️ ATOMIC FORCE-RETRY: Single Lua script eliminates the TOCTOU
+                // race between GET (read old dbId) and SET (refresh lock).
+                // The claim key ensures only ONE concurrent retry wins.
+                const claimKey = `${key}:retry_claim`;
+                const newPayload = JSON.stringify({ id: generatedDbId });
+
+                const existing = await redis.eval(
+                    FORCE_RETRY_LUA,
+                    2,              // number of KEYS
+                    key, claimKey,  // KEYS[1], KEYS[2]
+                    newPayload,     // ARGV[1] — new lock payload
+                    '300',          // ARGV[2] — main lock TTL (seconds)
+                    '5'             // ARGV[3] — claim lock TTL (seconds)
+                );
+
+                // nil → another force-retry already in progress
+                if (existing === null) {
+                    console.warn(`[Trace: ${traceId}] 🛑 Force-retry lost claim race (concurrent retry in progress)`);
+                    return res.status(409).json({
+                        error: 'Conflict',
+                        message: 'A force-retry for this idempotency key is already in progress',
+                        traceId
+                    });
+                }
+
+                // Reuse the original dbId if the lock contained one
+                if (existing && existing.length > 0) {
                     try {
-                        const parsed = JSON.parse(existingLock);
+                        const parsed = JSON.parse(existing);
                         if (parsed.id) {
                             generatedDbId = new mongoose.Types.ObjectId(parsed.id);
                         }
                     } catch (_) { /* Lock corrupted, proceed with new ID */ }
                 }
-                // Refresh the lock TTL with the (possibly reused) ID
-                await redis.set(key, JSON.stringify({ id: generatedDbId }), 'EX', 300);
             }
         }
         
