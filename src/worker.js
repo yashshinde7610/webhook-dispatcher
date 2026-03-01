@@ -37,6 +37,8 @@ const { persistState } = require('./batchProcessor');
 
 const dns = require('dns');
 const net = require('net');
+const http = require('http');
+const https = require('https');
 const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
 
 // --- 🛡️ SSRF PROTECTION (DNS-Resolution Based) ---
@@ -106,7 +108,7 @@ async function assertNotPrivate(hostname) {
                 { ssrfBlocked: true }
             );
         }
-        return;
+        return hostname; // Already validated, return as-is
     }
 
     // Resolve through OS DNS (respects /etc/hosts, systemd-resolved, etc.)
@@ -118,6 +120,8 @@ async function assertNotPrivate(hostname) {
             { ssrfBlocked: true }
         );
     }
+
+    return address; // Return the validated IP for pinning
 }
 
 // --- 🔌 CONNECT MONGO ---
@@ -136,24 +140,11 @@ const worker = new Worker('webhook-queue', async (job) => {
         console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown semantics: ${deliverySemantics}`);
     }
 
-    // 3. Persist PROCESSING state directly to MongoDB (atomic write).
-    //    If Mongo is down this throws, and BullMQ retries the whole job.
-    if (dbId) {
-        await persistState({
-            dbId,
-            status: 'PROCESSING',
-            upsert: true,
-            initialData: {
-                _id: dbId,
-                traceId: tid,
-                source: job.data.source || 'API',
-                payload: payload,
-                url: url,
-                deliverySemantics: deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
-            },
-            logEntry: { attempt: currentAttempt, status: 0, response: 'Processing started' }
-        });
-    }
+    // NOTE: PROCESSING write removed (Fix 3 — Write Amplification).
+    // The Event document is already created in server.js at ingestion time
+    // (status: PENDING).  BullMQ tracks the in-flight state in Redis.
+    // We only write to MongoDB on final resolution (COMPLETED/FAILED/DEAD),
+    // cutting per-job MongoDB writes from 3–4 down to 1.
 
     if (process.env.NODE_ENV !== 'production') {
         console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
@@ -167,10 +158,21 @@ const worker = new Worker('webhook-queue', async (job) => {
         // 5. SSRF Guard: Resolve hostname via DNS, then check the resolved IP.
         //    Defeats nip.io aliases, octal/hex encoding, DNS rebinding, etc.
         const target = new URL(url);
-        await assertNotPrivate(target.hostname);
+        const validatedIP = await assertNotPrivate(target.hostname);
 
         // 6. Prepare & Send Request
         const signature = createHmacSignature(payload, process.env.WEBHOOK_SECRET);
+
+        // 🛡️ PIN AXIOS TO THE VALIDATED IP (Defeats DNS Rebinding / TOCTOU)
+        // Without this, Axios performs its own internal DNS lookup which could
+        // resolve to a different IP than the one we just validated — a classic
+        // Time-of-Check to Time-of-Use attack.  By overriding the Agent's
+        // `lookup` function, we force Axios to connect to the exact IP we
+        // already verified is not private.
+        const pinnedLookup = (_hostname, _opts, cb) => {
+            if (typeof _opts === 'function') { cb = _opts; }
+            cb(null, validatedIP, net.isIPv4(validatedIP) ? 4 : 6);
+        };
 
         const response = await axios.post(url, payload, {
             headers: { 
@@ -179,13 +181,14 @@ const worker = new Worker('webhook-queue', async (job) => {
             },
             timeout: 5000,
 
-            // 🛡️ OOM PROTECTION: Cap the response body Axios will buffer.
-            // Without these, a malicious target can respond with an infinite
-            // stream (or a 5 GB body) and Axios will happily buffer it all
-            // into the V8 heap until the process crashes.
-            maxContentLength:  1 * 1024 * 1024,   // 1 MB — we only need the status + small body
-            maxBodyLength:     1 * 1024 * 1024,    // 1 MB — outbound safety (shouldn't matter for POST payloads we control)
-            maxRedirects:      0,                  // Webhook targets should not redirect; prevents open-redirect chains
+            // 🛡️ DNS-PINNED AGENTS: Axios will use our pre-validated IP
+            httpAgent:  new http.Agent({ lookup: pinnedLookup }),
+            httpsAgent: new https.Agent({ lookup: pinnedLookup }),
+
+            // 🛡️ OOM PROTECTION
+            maxContentLength:  1 * 1024 * 1024,
+            maxBodyLength:     1 * 1024 * 1024,
+            maxRedirects:      0,
         });
 
         // 7. Handle Success
@@ -199,6 +202,7 @@ const worker = new Worker('webhook-queue', async (job) => {
                 dbId,
                 status: 'COMPLETED',
                 httpStatus: safeHttpStatus(response.status),
+                incrementAttempt: true,
                 logEntry: { 
                     attempt: currentAttempt, 
                     status: safeHttpStatus(response.status), 
@@ -221,6 +225,7 @@ const worker = new Worker('webhook-queue', async (job) => {
                     status: 'FAILED_PERMANENT',
                     failureType: 'PERMANENT',
                     lastError: error.message,
+                    incrementAttempt: true,
                     logEntry: { attempt: currentAttempt, status: null, response: error.message }
                 });
             }
@@ -246,6 +251,7 @@ const worker = new Worker('webhook-queue', async (job) => {
                 httpStatus,
                 errorCode,
                 lastError: msg,
+                incrementAttempt: true,
                 logEntry: { attempt: currentAttempt, status: httpStatus, response: msg }
             });
         }
@@ -283,7 +289,10 @@ console.log(chalk.yellow.bold('\n🔸 BACKGROUND WORKER ACTIVE 🔸'));
 // ... (rest of your logs)
 
 // --- 🛑 GRACEFUL SHUTDOWN ---
+let shutdownInProgress = false;
 async function gracefulShutdown(signal) {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
     console.log(chalk.yellow.bold(`\n🛑 Received ${signal}. Starting graceful shutdown...`));
     
     try {
@@ -312,3 +321,17 @@ async function gracefulShutdown(signal) {
 // Listen for both Ctrl+C (Local) and Docker/Kubernetes termination signals
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// --- 💥 UNHANDLED ERROR CATCHERS ---
+// A single unhandled rejection or uncaught exception would otherwise
+// crash the process silently.  These handlers log the fatal error,
+// trigger a graceful drain, and exit cleanly so the container
+// orchestrator (Docker/K8s) can spin up a healthy replacement.
+process.on('uncaughtException', (err) => {
+    console.error('💥 UNCAUGHT EXCEPTION:', err);
+    gracefulShutdown('uncaughtException');
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('💥 UNHANDLED REJECTION:', reason);
+    gracefulShutdown('unhandledRejection');
+});

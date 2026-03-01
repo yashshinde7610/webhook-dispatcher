@@ -77,8 +77,15 @@
             tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag])
         );
 
+        // 🛡️ DASHBOARD AUTH: Uses a separate read-only DASHBOARD_TOKEN.
+        // The backend API_KEY is NEVER shipped to the browser.
+        const dashboardToken = new URLSearchParams(window.location.search).get('token')
+            || localStorage.getItem('dashboardToken')
+            || prompt('Enter Dashboard Token:');
+        if (dashboardToken) localStorage.setItem('dashboardToken', dashboardToken);
+
         const socket = io({
-            auth: { token: 'architect-secret-123' }
+            auth: { token: dashboardToken }
         });
         const eventsContainer = document.getElementById('events');
         const connStatus = document.getElementById('connection-status');
@@ -142,14 +149,19 @@
         });
 
         // 🛠️ REPLAY FUNCTION
+        // Replay is a write operation — requires the full API_KEY.
+        // The dashboard never stores it; the user is prompted each time.
         async function replayJob(id) {
             try {
+                const apiKey = prompt('Enter API Key to authorize replay:');
+                if (!apiKey) return;
+
                 const btn = document.querySelector(`#card-${id} button`);
                 if(btn) btn.innerText = "⏳ Queuing...";
                 
                 const res = await fetch(`/api/events/${id}/replay`, {
                     method: 'POST',
-                    headers: { 'x-api-key': 'architect-secret-123' }
+                    headers: { 'x-api-key': apiKey }
                 });
                 
                 const data = await res.json();

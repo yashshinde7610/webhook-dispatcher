@@ -32,6 +32,7 @@ services:
       - REDIS_PORT=6379
       - WEBHOOK_SECRET=${WEBHOOK_SECRET} # 👈 Pulls from .env
       - API_KEY=${API_KEY}               # 👈 Pulls from .env
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN} # 👈 Read-only dashboard auth
     depends_on:
       - mongo
       - redis

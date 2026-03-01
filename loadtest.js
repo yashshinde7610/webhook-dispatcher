@@ -35,7 +35,7 @@ export default function () {
   const params = {
     headers: { 
         'Content-Type': 'application/json', 
-        'x-api-key': 'architect-secret-123' 
+        'x-api-key': __ENV.API_KEY || 'test-api-key'
     },
   };
 

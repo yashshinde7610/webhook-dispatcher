@@ -23,6 +23,15 @@ const EventSchema = new mongoose.Schema({
     source: { type: String, default: 'API' }, // Defaulted to API if not sent
     payload: { type: Object, required: true },
     url: { type: String, required: true },    // ⚠️ Renamed from 'targetUrl' to match worker.js
+
+    // --- IDEMPOTENCY (Disk-Backed) ---
+    // Unique sparse index: only documents WITH this field are indexed.
+    // E11000 on collision → instant atomic dedup without Redis RAM pressure.
+    // Keys now live as long as the event (days/months/forever), not 5 minutes.
+    idempotencyKey: {
+        type: String,
+        index: { unique: true, sparse: true }
+    },
     
     // --- STATE MACHINE ---
     status: { 

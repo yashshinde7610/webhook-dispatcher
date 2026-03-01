@@ -10,7 +10,7 @@ require('dotenv').config();
 
 // --- 🛡️ FAIL-FAST ENV VALIDATION ---
 // Crash at boot — not after 10,000 requests have been accepted.
-const REQUIRED_ENV = ['API_KEY'];
+const REQUIRED_ENV = ['API_KEY', 'DASHBOARD_TOKEN'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {
     console.error(`❌ FATAL: Missing required environment variables: ${missing.join(', ')}`);
@@ -40,38 +40,28 @@ const app = express();
 const server = http.createServer(app); 
 const io = new Server(server); 
 
-// --- 🛡️ ATOMIC FORCE-RETRY LUA SCRIPT ---
-// This runs inside Redis's single-threaded Lua engine, so the entire
-// read → claim → refresh sequence is indivisible. No TOCTOU possible.
-//
-// KEYS[1] = idempotency key       (e.g. "idempotency:abc-123")
-// KEYS[2] = short-lived claim key (e.g. "idempotency:abc-123:retry_claim")
-// ARGV[1] = new lock payload      (JSON with the dbId)
-// ARGV[2] = main lock TTL         (seconds)
-// ARGV[3] = claim lock TTL        (seconds, short — just to block overlapping retries)
-//
-// Returns:
-//   existing lock value (string) → caller won, reuse the dbId inside
-//   ""                           → caller won, no prior lock existed
-//   nil                          → caller lost, another retry is in progress → 409
-const FORCE_RETRY_LUA = `
-local claimed = redis.call('SET', KEYS[2], '1', 'NX', 'EX', tonumber(ARGV[3]))
-if not claimed then
-    return nil
-end
-local existing = redis.call('GET', KEYS[1]) or ''
-redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
-return existing
-`;
+// --- 🌐 SOCKET.IO REDIS ADAPTER (Horizontal Scaling) ---
+// Without this, io.emit() only reaches clients connected to THIS process.
+// With the adapter, events are published to Redis Pub/Sub and broadcast
+// across all replicas — no more split-brain real-time communication.
+const { createAdapter } = require('@socket.io/redis-adapter');
+const IORedis = require('ioredis');
+const pubClient = new IORedis({ host: process.env.REDIS_HOST || '127.0.0.1', port: Number(process.env.REDIS_PORT) || 6379 });
+const subClient = pubClient.duplicate();
+io.adapter(createAdapter(pubClient, subClient));
+
+// (Atomic force-retry Lua script removed — idempotency is now backed
+// by a MongoDB unique sparse index on Event.idempotencyKey.  See POST route.)
 
 // --- 🛡️ WEBSOCKET AUTH MIDDLEWARE ---
-// Prevents unauthenticated users from intercepting webhook payloads via WebSocket.
+// Dashboard uses a separate read-only DASHBOARD_TOKEN.
+// The backend API_KEY is NEVER exposed to the browser.
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
-    if (token === process.env.API_KEY) {
+    if (token === process.env.DASHBOARD_TOKEN) {
         return next();
     }
-    return next(new Error('Authentication error: Invalid API Key'));
+    return next(new Error('Authentication error: Invalid Dashboard Token'));
 });
 
 app.use(express.json());
@@ -147,6 +137,10 @@ setInterval(async () => {
 }, 2000);
 
 // --- 📥 POST ROUTE (Ingestion) ---
+// ARCHITECTURE: This is the ONLY place Event documents are created.
+// Idempotency is enforced via a unique sparse MongoDB index on
+// `idempotencyKey` — no Redis RAM pressure, survives restarts,
+// and keys live as long as the event (days/months), not 5 minutes.
 app.post('/api/events', validateApiKey, async (req, res) => {
     const traceId = crypto.randomUUID(); 
 
@@ -174,73 +168,92 @@ app.post('/api/events', validateApiKey, async (req, res) => {
         });
     }
 
-    const idempotencyKey = req.headers['idempotency-key'];
+    const idempotencyKey = req.headers['idempotency-key'] || null;
     const forceRetry = req.headers['x-force-retry'] === 'true';
     const jobData = req.body;
 
-        try {
-        // 1. Generate MongoDB ID synchronously FIRST
-        let generatedDbId = new mongoose.Types.ObjectId();
-
-        // 2. ⚡ ATOMIC Idempotency Lock (Fixes TOCTOU Race Condition)
-        if (idempotencyKey) {
-            const key = `idempotency:${idempotencyKey}`;
-
-            if (!forceRetry) {
-                const lockPayload = JSON.stringify({ id: generatedDbId });
-                // 'NX' ensures this ONLY writes if the key does not exist.
-                // It is a single atomic operation evaluated inside the Redis engine.
-                const acquired = await redis.set(key, lockPayload, 'EX', 300, 'NX');
-                
-                if (!acquired) {
-                    console.warn(`[Trace: ${traceId}] 🛑 Atomic Idempotency Block (Race condition averted)`);
-                    return res.status(409).json({ 
-                        error: 'Conflict', 
-                        message: 'Event already processed', 
-                        traceId 
-                    });
-                }
-            } else {
-                // 🛡️ ATOMIC FORCE-RETRY: Single Lua script eliminates the TOCTOU
-                // race between GET (read old dbId) and SET (refresh lock).
-                // The claim key ensures only ONE concurrent retry wins.
-                const claimKey = `${key}:retry_claim`;
-                const newPayload = JSON.stringify({ id: generatedDbId });
-
-                const existing = await redis.eval(
-                    FORCE_RETRY_LUA,
-                    2,              // number of KEYS
-                    key, claimKey,  // KEYS[1], KEYS[2]
-                    newPayload,     // ARGV[1] — new lock payload
-                    '300',          // ARGV[2] — main lock TTL (seconds)
-                    '5'             // ARGV[3] — claim lock TTL (seconds)
-                );
-
-                // nil → another force-retry already in progress
-                if (existing === null) {
-                    console.warn(`[Trace: ${traceId}] 🛑 Force-retry lost claim race (concurrent retry in progress)`);
-                    return res.status(409).json({
-                        error: 'Conflict',
-                        message: 'A force-retry for this idempotency key is already in progress',
-                        traceId
-                    });
-                }
-
-                // Reuse the original dbId if the lock contained one
-                if (existing && existing.length > 0) {
-                    try {
-                        const parsed = JSON.parse(existing);
-                        if (parsed.id) {
-                            generatedDbId = new mongoose.Types.ObjectId(parsed.id);
+    try {
+        // --- FORCE RETRY PATH ---
+        // Atomically claim the retry via findOneAndUpdate with a status guard.
+        // If two concurrent retries race, only one wins (the $ne:'PENDING' filter).
+        if (idempotencyKey && forceRetry) {
+            const existing = await Event.findOneAndUpdate(
+                { idempotencyKey, status: { $ne: 'PENDING' } },
+                {
+                    $set: {
+                        status: 'PENDING',
+                        url: jobData.url || undefined,
+                        payload: jobData.payload || undefined,
+                    },
+                    $push: {
+                        logs: {
+                            $each: [{ attempt: 0, status: 0, response: 'Force Retry', timestamp: new Date() }],
+                            $slice: -(Event.MAX_LOGS || 20)
                         }
-                    } catch (_) { /* Lock corrupted, proceed with new ID */ }
-                }
-            }
-        }
-        
-        console.log(`[Trace: ${traceId}] 📦 Job Queued to Redis. Mongo ID reserved: ${generatedDbId}`);
+                    }
+                },
+                { new: true }
+            );
 
-        // 3. Push directly to Redis (BullMQ is extremely fast)
+            if (!existing) {
+                const found = await Event.findOne({ idempotencyKey });
+                if (!found) {
+                    return res.status(404).json({ error: 'No event found for this idempotency key', traceId });
+                }
+                return res.status(409).json({
+                    error: 'Conflict',
+                    message: 'Event is already pending or a retry is in progress',
+                    existingId: found._id,
+                    existingStatus: found.status,
+                    traceId
+                });
+            }
+
+            // Remove any stuck BullMQ job, then re-queue
+            const existingJob = await myQueue.getJob(existing._id.toString());
+            if (existingJob) await existingJob.remove();
+
+            await addToQueue({
+                url: existing.url,
+                payload: existing.payload,
+                dbId: existing._id,
+                traceId: existing.traceId,
+                source: existing.source,
+                deliverySemantics: existing.deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
+            });
+
+            io.emit('job-update', { id: existing._id, status: 'Pending (Force Retry)', data: existing.payload, traceId });
+            return res.status(202).json({
+                status: 'accepted',
+                message: 'Force retry queued',
+                id: existing._id,
+                traceId
+            });
+        }
+
+        // --- NORMAL INGESTION PATH ---
+        const generatedDbId = new mongoose.Types.ObjectId();
+
+        // Create the Event document in MongoDB.  If an idempotencyKey is
+        // provided and already exists, the unique sparse index throws E11000
+        // — instant atomic dedup, no Redis RAM pressure, survives restarts.
+        const eventDoc = new Event({
+            _id: generatedDbId,
+            traceId,
+            source: 'API_KEY_USER',
+            payload: jobData.payload,
+            url: jobData.url,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
+            status: 'PENDING',
+            logs: [{ attempt: 0, status: 0, response: 'Ingested', timestamp: new Date() }]
+        });
+
+        await eventDoc.save();
+
+        console.log(`[Trace: ${traceId}] 📦 Event persisted & queued. Mongo ID: ${generatedDbId}`);
+
+        // Push to BullMQ
         await addToQueue({ 
             ...jobData, 
             dbId: generatedDbId, 
@@ -249,10 +262,10 @@ app.post('/api/events', validateApiKey, async (req, res) => {
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
         }); 
 
-        // 4. Emit real-time update
+        // Emit real-time update
         io.emit('job-update', { id: generatedDbId, status: 'Pending', data: jobData, traceId });
         
-        // 5. Respond to client immediately
+        // Respond to client immediately
         res.status(202).json({ 
             status: 'accepted', 
             message: 'Job pushed to queue', 
@@ -261,6 +274,24 @@ app.post('/api/events', validateApiKey, async (req, res) => {
         });
 
     } catch (error) {
+        // E11000 = duplicate idempotencyKey → return cached status
+        if (error.code === 11000 && idempotencyKey) {
+            console.warn(`[Trace: ${traceId}] 🛑 Idempotency collision (E11000)`);
+            try {
+                const existing = await Event.findOne({ idempotencyKey });
+                if (existing) {
+                    return res.status(409).json({
+                        error: 'Conflict',
+                        message: 'Event already processed',
+                        existingId: existing._id,
+                        existingStatus: existing.status,
+                        traceId
+                    });
+                }
+            } catch (_) { /* fall through */ }
+            return res.status(409).json({ error: 'Conflict', message: 'Duplicate idempotency key', traceId });
+        }
+
         console.error(`[Trace: ${traceId}] 💥 Error: ${error.message}`);
         res.status(500).json({ error: error.message, traceId });
     }
@@ -365,7 +396,45 @@ server.listen(PORT, () => {
     console.log(`✅  Server Status:    ${chalk.green('ONLINE')}`);
     console.log(`🔗  Port:             ${chalk.yellow(PORT)}`);
     console.log(`🔑  Security:         ${chalk.cyan('HMAC + API Key Active')}`);
-    console.log(`🧠  Idempotency:      ${chalk.magenta('Redis-Backed')}`);
+    console.log(`🧠  Idempotency:      ${chalk.magenta('MongoDB-Backed (unique index)')}`);
+    console.log(`🌐  WebSocket:        ${chalk.magenta('Redis-Adapted (multi-replica)')}`);
     console.log(chalk.gray('-----------------------------------'));
     console.log(chalk.white('Waiting for incoming events...'));
+});
+
+// --- 🛑 GRACEFUL SHUTDOWN ---
+let shutdownInProgress = false;
+async function gracefulShutdown(signal) {
+    if (shutdownInProgress) return;
+    shutdownInProgress = true;
+    console.log(chalk.yellow.bold(`\n🛑 Received ${signal}. Shutting down...`));
+    try {
+        server.close();
+        await mongoose.connection.close();
+        pubClient.disconnect();
+        subClient.disconnect();
+        await redis.quit();
+        console.log(chalk.green('✅ Shutdown complete. Goodbye!'));
+        process.exit(0);
+    } catch (err) {
+        console.error(chalk.red('💥 Shutdown error:'), err);
+        process.exit(1);
+    }
+}
+
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// --- 💥 UNHANDLED ERROR CATCHERS ---
+// A single unhandled rejection or uncaught exception would otherwise
+// crash the process silently.  These handlers log the fatal error,
+// trigger a graceful drain, and exit cleanly so the container
+// orchestrator (Docker/K8s) can spin up a healthy replacement.
+process.on('uncaughtException', (err) => {
+    console.error('💥 UNCAUGHT EXCEPTION:', err);
+    gracefulShutdown('uncaughtException');
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('💥 UNHANDLED REJECTION:', reason);
+    gracefulShutdown('unhandledRejection');
 });

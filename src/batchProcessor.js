@@ -89,7 +89,11 @@ async function persistState(data) {
     if (data.upsert && data.initialData) {
         options.upsert = true;
         update.$setOnInsert = data.initialData;
-        update.$inc = { attemptCount: 1 };
+    }
+
+    // Increment attempt count for actual delivery attempts
+    if (data.incrementAttempt || (data.upsert && data.initialData)) {
+        update.$inc = { ...(update.$inc || {}), attemptCount: 1 };
     }
 
     await Event.updateOne({ _id: data.dbId }, update, options);
