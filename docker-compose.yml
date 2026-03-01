@@ -33,6 +33,7 @@ services:
       - WEBHOOK_SECRET=${WEBHOOK_SECRET} # 👈 Pulls from .env
       - API_KEY=${API_KEY}               # 👈 Pulls from .env
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN} # 👈 Read-only dashboard auth
+      - GEMINI_API_KEY=${GEMINI_API_KEY}     # 👈 Gemini AI for DLQ suggestions
     depends_on:
       - mongo
       - redis

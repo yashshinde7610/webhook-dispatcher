@@ -379,37 +379,77 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
 });
 
 // --- 🔄 REPLAY ROUTE (Restored!) ---
+// Supports replaying events in ANY terminal state: FAILED, FAILED_PERMANENT, DEAD.
+// For FAILED events, BullMQ may still own the job (delayed/waiting for retry).
+// We best-effort remove the old job, then add a fresh one with a unique replay
+// jobId to avoid "job already exists" conflicts.
 app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
     try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ error: 'Invalid event ID' });
+        }
+
         const eventLog = await Event.findById(req.params.id);
         
         if (!eventLog) {
             return res.status(404).json({ error: 'Event not found' });
         }
 
-        eventLog.status = 'PENDING';
-        eventLog.logs.push({ 
-            attempt: eventLog.logs.length + 1, 
-            status: 0, 
-            response: 'Manual Replay Triggered' 
+        // 🛡️ Use findByIdAndUpdate to avoid Mongoose re-validating the entire
+        // document.  Legacy events may have payload stored as Object (before the
+        // schema was changed to String), and .save() would fail validation.
+        await Event.findByIdAndUpdate(eventLog._id, {
+            $set: {
+                status: 'PENDING',
+                attemptCount: 0,
+                failureType: null,
+                lastError: null,
+                errorCode: null,
+            },
+            $push: {
+                logs: {
+                    attempt: (eventLog.logs?.length || 0) + 1,
+                    status: 0,
+                    response: 'Manual Replay Triggered',
+                    timestamp: new Date()
+                }
+            }
         });
-        await eventLog.save();
 
         const jobId = eventLog._id.toString();
+
+        // 🛡️ BEST-EFFORT REMOVAL: For DEAD events the BullMQ job is already gone
+        // (removeOnComplete: true). For FAILED events BullMQ still manages retries,
+        // so the job may be in delayed/waiting/active state.  We try to remove it
+        // to stop redundant retries, but if it fails (e.g. job is active) we
+        // proceed anyway — the replay gets a unique jobId to avoid conflicts.
         const existingJob = await myQueue.getJob(jobId);
         if (existingJob) {
-            await existingJob.remove(); 
+            try { await existingJob.remove(); } catch (_) {
+                logger.warn({ jobId }, 'Could not remove existing BullMQ job for replay (may be active)');
+            }
         }
 
-        // 🛡️ FIX: Explicitly pass top-level fields from the stored document.
-        // Spreading eventLog.payload here would flatten inner data to root,
-        // losing url/traceId/deliverySemantics and crashing the worker.
-        await addToQueue({ 
+        // 🛡️ UNIQUE REPLAY JOB ID: If the old BullMQ job couldn't be removed
+        // (FAILED events still owned by BullMQ), using the same jobId would throw
+        // "job already exists".  A timestamp-suffixed ID avoids the collision.
+        // The worker still finds the MongoDB document via job.data.dbId.
+        // The queueEvents handlers extract realId from job.data.dbId too.
+        const replayJobId = existingJob ? `${jobId}-replay-${Date.now()}` : jobId;
+
+        await myQueue.add('webhook-job', {
             url: eventLog.url,
-            payload: eventLog.payload,
+            // 🛡️ Normalize: legacy events may have payload as Object instead of String
+            payload: typeof eventLog.payload === 'object' ? JSON.stringify(eventLog.payload) : eventLog.payload,
             dbId: eventLog._id,
             traceId: eventLog.traceId,
             deliverySemantics: eventLog.deliverySemantics
+        }, {
+            attempts: 5,
+            backoff: { type: 'exponential', delay: 1000 },
+            jobId: replayJobId,
+            removeOnComplete: true,
+            removeOnFail: false
         });
 
         enqueueJobUpdate({ id: eventLog._id, status: 'Pending (Replay)', data: redactPayloadString(eventLog.payload) });
@@ -471,6 +511,212 @@ app.patch('/api/events/:id', validateApiKey, async (req, res) => {
 
         res.json({ message: 'Event updated successfully', updatedFields: Object.keys(safeUpdates) });
 
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// --- 📋 GET ROUTES (List + Detail) ---
+// Added for dashboard data fetching and E2E test verification.
+// Payloads are PII-redacted — the raw data stays in MongoDB only.
+
+// --- ✨ AI SUGGEST-FIX ROUTE (Human-in-the-Loop DLQ) ---
+// This route does NOT modify ANY data.  It is a read-only analysis endpoint.
+// The user must manually review the suggestion, then explicitly call
+// PATCH /api/events/:id + POST /api/events/:id/replay to apply it.
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+app.post('/api/events/:id/suggest-fix', validateApiKey, async (req, res) => {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+        return res.status(501).json({
+            error: 'AI suggestions are not configured',
+            message: 'Set GEMINI_API_KEY in your environment to enable this feature.',
+            code: 'GEMINI_NOT_CONFIGURED'
+        });
+    }
+
+    try {
+        // Validate ObjectId format before querying (prevents CastError on invalid IDs)
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ error: 'Invalid event ID format', code: 'INVALID_ID' });
+        }
+
+        const event = await Event.findById(req.params.id).lean();
+        if (!event) return res.status(404).json({ error: 'Event not found', code: 'NOT_FOUND' });
+
+        // Only suggest fixes for failed/dead events — not pending or completed
+        const failedStatuses = ['FAILED', 'FAILED_PERMANENT', 'DEAD'];
+        if (!failedStatuses.includes(event.status)) {
+            return res.status(400).json({
+                error: 'Event is not in a failed state',
+                message: `Current status: ${event.status}. AI suggestions are only available for failed webhooks.`,
+                code: 'NOT_FAILED'
+            });
+        }
+
+        // Build the prompt with all available context
+        let parsedPayload;
+        try { parsedPayload = JSON.parse(event.payload); } catch { parsedPayload = event.payload; }
+
+        const lastLogs = (event.logs || []).slice(-5).map(l => ({
+            attempt: l.attempt,
+            status: l.status,
+            response: l.response,
+            timestamp: l.timestamp
+        }));
+
+        const prompt = `You are a webhook delivery debugging assistant. A webhook delivery has failed.
+
+TARGET URL: ${event.url}
+STATUS: ${event.status}
+FAILURE TYPE: ${event.failureType || 'Unknown'}
+LAST ERROR: ${event.lastError || 'None'}
+HTTP STATUS CODE: ${event.finalHttpStatus || 'N/A'}
+ERROR CODE: ${event.errorCode || 'N/A'}
+ATTEMPT COUNT: ${event.attemptCount || 0}
+
+ORIGINAL PAYLOAD (JSON):
+${JSON.stringify(parsedPayload, null, 2)}
+
+RECENT DELIVERY LOGS:
+${JSON.stringify(lastLogs, null, 2)}
+
+TASK: Analyze the failure and suggest a FIXED JSON payload that is more likely to succeed on retry.
+
+RULES:
+1. Return ONLY a valid JSON object — no markdown fences, no explanation text outside the JSON.
+2. The root response must be a JSON object with exactly these keys:
+   - "analysis": a short human-readable string explaining what went wrong
+   - "suggestion": a short string describing what you changed
+   - "fixedPayload": the corrected JSON payload object (not stringified)
+   - "confidence": a string, one of "high", "medium", or "low"
+3. If the error is infrastructure-related (DNS, timeout, connection refused) and the payload looks correct, return the original payload unchanged in fixedPayload and set confidence to "low".
+4. Do NOT invent fields that weren't in the original payload.
+5. Keep the fixedPayload structure identical to the original — only fix values that are likely causing the failure.`;
+
+        const genAI = new GoogleGenerativeAI(geminiKey);
+        const primaryModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+        const fallbackModel = 'gemini-2.0-flash-lite';
+
+        let responseText;
+        try {
+            const model = genAI.getGenerativeModel({ model: primaryModel });
+            const result = await model.generateContent(prompt);
+            responseText = result.response.text();
+        } catch (primaryErr) {
+            // If rate-limited on primary model, try fallback
+            if (primaryErr.message && primaryErr.message.includes('429') && primaryModel !== fallbackModel) {
+                logger.warn({ eventId: req.params.id, primary: primaryModel, fallback: fallbackModel }, 'Primary model rate-limited, trying fallback');
+                try {
+                    const fbModel = genAI.getGenerativeModel({ model: fallbackModel });
+                    const fbResult = await fbModel.generateContent(prompt);
+                    responseText = fbResult.response.text();
+                } catch (fbErr) {
+                    // Both models failed — return structured error
+                    const isQuota = fbErr.message && (fbErr.message.includes('429') || fbErr.message.includes('quota'));
+                    return res.status(isQuota ? 429 : 502).json({
+                        error: 'AI service temporarily unavailable',
+                        message: isQuota
+                            ? 'Gemini API quota exceeded on all models. Please wait a few minutes or upgrade your plan at https://aistudio.google.com.'
+                            : fbErr.message,
+                        code: isQuota ? 'QUOTA_EXCEEDED' : 'AI_ERROR'
+                    });
+                }
+            } else {
+                // Non-429 error or no fallback possible
+                const isQuota = primaryErr.message && (primaryErr.message.includes('429') || primaryErr.message.includes('quota'));
+                return res.status(isQuota ? 429 : 502).json({
+                    error: isQuota ? 'AI service temporarily unavailable' : 'AI request failed',
+                    message: isQuota
+                        ? 'Gemini API quota exceeded. Please wait a few minutes or upgrade your plan at https://aistudio.google.com.'
+                        : primaryErr.message,
+                    code: isQuota ? 'QUOTA_EXCEEDED' : 'AI_ERROR'
+                });
+            }
+        }
+
+        // Parse the AI response — strip markdown fences if present
+        let aiResponse;
+        try {
+            const cleaned = responseText
+                .replace(/^```(?:json)?\s*/i, '')
+                .replace(/\s*```\s*$/i, '')
+                .trim();
+            aiResponse = JSON.parse(cleaned);
+        } catch (parseErr) {
+            logger.warn({ eventId: req.params.id, raw: responseText.slice(0, 500) }, 'Gemini returned unparseable response');
+            return res.status(502).json({
+                error: 'AI returned an invalid response',
+                message: 'The model response could not be parsed as JSON. Try again.',
+                code: 'AI_PARSE_ERROR',
+                raw: responseText.slice(0, 1000)
+            });
+        }
+
+        logger.info({ eventId: req.params.id, confidence: aiResponse.confidence }, 'AI suggestion generated');
+
+        res.json({
+            eventId: event._id,
+            currentStatus: event.status,
+            analysis: aiResponse.analysis || 'No analysis provided',
+            suggestion: aiResponse.suggestion || 'No suggestion provided',
+            fixedPayload: aiResponse.fixedPayload || parsedPayload,
+            confidence: aiResponse.confidence || 'low',
+            originalPayload: parsedPayload
+        });
+
+    } catch (error) {
+        logger.error({ eventId: req.params.id, err: error.message }, 'AI suggest-fix failed');
+        res.status(500).json({ error: 'AI suggestion failed', message: error.message });
+    }
+});
+app.get('/api/events', validateApiKey, async (req, res) => {
+    try {
+        const page  = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+        const skip  = (page - 1) * limit;
+
+        const filter = {};
+        if (req.query.status) filter.status = req.query.status;
+
+        const [events, total] = await Promise.all([
+            Event.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+            Event.countDocuments(filter)
+        ]);
+
+        res.json({
+            events: events.map(e => ({
+                ...e,
+                payload: e.payload ? redactPayloadString(e.payload) : null
+            })),
+            pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/events/:id', validateApiKey, async (req, res) => {
+    try {
+        const event = await Event.findById(req.params.id).lean();
+        if (!event) return res.status(404).json({ error: 'Event not found' });
+
+        res.json({
+            ...event,
+            payload: event.payload ? redactPayloadString(event.payload) : null
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// --- 🗑️ DELETE ROUTE (Cleanup + Testing) ---
+app.delete('/api/events/:id', validateApiKey, async (req, res) => {
+    try {
+        const result = await Event.findByIdAndDelete(req.params.id);
+        if (!result) return res.status(404).json({ error: 'Event not found' });
+        res.json({ message: 'Event deleted', id: req.params.id });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

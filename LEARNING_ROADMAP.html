@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Webhook Dispatcher — Complete Learning Roadmap</title>
+<style>
+    /* ═══════════════════════════════════════════
+       PRINT-OPTIMISED PDF ROADMAP STYLESHEET
+       Open in browser → Ctrl+P → Save as PDF
+       ═══════════════════════════════════════════ */
+    @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; color: #1a1a2e; line-height: 1.55; background: #fff; padding: 0 24px; }
+
+    /* Cover */
+    .cover { text-align: center; padding: 60px 0 30px; page-break-after: always; }
+    .cover h1 { font-size: 2.6em; color: #0f172a; margin-bottom: 8px; letter-spacing: -0.5px; }
+    .cover .subtitle { font-size: 1.25em; color: #475569; margin-bottom: 24px; }
+    .cover .meta { font-size: 0.9em; color: #94a3b8; }
+    .cover .badge { display: inline-block; background: #3b82f6; color: #fff; padding: 6px 18px; border-radius: 20px; font-weight: 600; font-size: 0.85em; margin-top: 18px; }
+    .cover-visual { margin: 40px auto 0; max-width: 520px; padding: 28px 24px; background: linear-gradient(135deg, #0f172a, #1e293b); color: #e2e8f0; border-radius: 14px; text-align: left; font-family: 'Courier New', monospace; font-size: 0.82em; line-height: 1.7; }
+    .cover-visual .g { color: #22c55e; } .cover-visual .b { color: #3b82f6; } .cover-visual .y { color: #eab308; } .cover-visual .r { color: #ef4444; }
+
+    /* Table of Contents */
+    .toc { page-break-after: always; padding-top: 20px; }
+    .toc h2 { font-size: 1.6em; color: #0f172a; border-bottom: 3px solid #3b82f6; padding-bottom: 6px; margin-bottom: 16px; }
+    .toc ol { padding-left: 24px; }
+    .toc li { padding: 5px 0; font-size: 0.95em; }
+    .toc li a { color: #3b82f6; text-decoration: none; }
+    .toc .sub { padding-left: 20px; list-style-type: disc; }
+
+    /* Section Headers */
+    h2.phase { font-size: 1.55em; color: #fff; background: linear-gradient(135deg, #3b82f6, #6366f1); padding: 12px 18px; border-radius: 8px; margin: 28px 0 14px; page-break-after: avoid; }
+    h2.phase .num { background: rgba(255,255,255,0.25); padding: 2px 10px; border-radius: 14px; margin-right: 8px; font-size: 0.85em; }
+    h3 { font-size: 1.15em; color: #1e40af; margin: 18px 0 8px; border-left: 4px solid #3b82f6; padding-left: 10px; page-break-after: avoid; }
+    h4 { font-size: 1em; color: #334155; margin: 12px 0 6px; }
+
+    /* Cards */
+    .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 18px; margin: 10px 0; page-break-inside: avoid; }
+    .card.green { border-left: 5px solid #22c55e; }
+    .card.blue { border-left: 5px solid #3b82f6; }
+    .card.amber { border-left: 5px solid #eab308; }
+    .card.red { border-left: 5px solid #ef4444; }
+    .card.purple { border-left: 5px solid #8b5cf6; }
+
+    /* Tags */
+    .tag { display: inline-block; font-size: 0.72em; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin: 2px 2px 2px 0; vertical-align: middle; }
+    .tag-beginner { background: #dcfce7; color: #166534; }
+    .tag-intermediate { background: #fef3c7; color: #92400e; }
+    .tag-advanced { background: #fee2e2; color: #991b1b; }
+    .tag-time { background: #e0e7ff; color: #3730a3; }
+    .tag-file { background: #f1f5f9; color: #475569; font-family: monospace; }
+
+    /* Lists */
+    ul, ol { padding-left: 22px; margin: 6px 0; }
+    li { margin: 3px 0; font-size: 0.92em; }
+    li strong { color: #1e293b; }
+
+    /* Tables */
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 0.88em; }
+    th { background: #1e293b; color: #fff; padding: 8px 10px; text-align: left; font-weight: 600; }
+    td { padding: 7px 10px; border-bottom: 1px solid #e2e8f0; }
+    tr:nth-child(even) td { background: #f8fafc; }
+
+    /* Milestone */
+    .milestone { background: linear-gradient(135deg, #0f172a, #1e293b); color: #e2e8f0; padding: 16px 20px; border-radius: 10px; margin: 16px 0; page-break-inside: avoid; }
+    .milestone h4 { color: #22c55e; margin: 0 0 6px; }
+    .milestone ul { padding-left: 20px; }
+    .milestone li { color: #cbd5e1; }
+
+    /* Checkpoint */
+    .checkpoint { background: #eff6ff; border: 2px dashed #3b82f6; padding: 12px 16px; border-radius: 8px; margin: 14px 0; page-break-inside: avoid; }
+    .checkpoint h4 { color: #1d4ed8; margin-bottom: 4px; }
+
+    /* Code */
+    code { font-family: 'Courier New', monospace; background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-size: 0.88em; color: #be185d; }
+
+    /* Diagram / Flow */
+    .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; font-size: 0.88em; }
+    .flow-box { background: #e0e7ff; color: #3730a3; padding: 6px 12px; border-radius: 6px; font-weight: 600; text-align: center; }
+    .flow-arrow { color: #94a3b8; font-size: 1.3em; }
+
+    /* Duration sidebar */
+    .duration { float: right; background: #e0e7ff; color: #3730a3; padding: 3px 10px; border-radius: 12px; font-size: 0.78em; font-weight: 600; }
+
+    /* Page breaks */
+    .pb { page-break-before: always; }
+
+    /* Summary boxes */
+    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+    .summary-grid .card { margin: 0; }
+
+    /* Footer */
+    .footer { text-align: center; padding: 30px 0 10px; color: #94a3b8; font-size: 0.82em; border-top: 1px solid #e2e8f0; margin-top: 30px; }
+
+    @media print {
+        body { padding: 0; }
+        .card, .milestone, .checkpoint { break-inside: avoid; }
+        h2.phase, h3 { break-after: avoid; }
+    }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     COVER PAGE
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="cover">
+    <h1>🚀 Webhook Dispatcher</h1>
+    <div class="subtitle">Complete Beginner-to-Production Learning Roadmap</div>
+    <div class="meta">A structured guide to every technology, pattern &amp; concept in this project</div>
+    <div class="badge">~16–20 Weeks · 7 Phases · 80+ Concepts</div>
+
+    <div class="cover-visual">
+        <span class="b">POST /api/events</span> → <span class="g">MongoDB</span> → <span class="y">BullMQ (Redis)</span> → <span class="b">Worker</span><br>
+        &nbsp;&nbsp;↓ <span class="g">Joi Validation</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓ <span class="y">Exp. Backoff</span> &nbsp;&nbsp;&nbsp;↓ <span class="b">Axios POST</span><br>
+        &nbsp;&nbsp;↓ <span class="g">Rate Limiting</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓ <span class="y">Circuit Break</span> &nbsp;&nbsp;↓ <span class="b">HMAC Sign</span><br>
+        &nbsp;&nbsp;↓ <span class="g">Idempotency</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓ <span class="r">DEAD / Retry</span> &nbsp;&nbsp;↓ <span class="b">SSRF Guard</span><br>
+        &nbsp;&nbsp;└─── <span class="y">Socket.IO Dashboard</span> ←── <span class="g">Pino Logger</span> ←── <span class="b">PII Redact</span>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     TABLE OF CONTENTS
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="toc">
+    <h2>📋 Table of Contents</h2>
+    <ol>
+        <li><a href="#p0">Phase 0 — Foundations (JavaScript &amp; Tooling)</a></li>
+        <li><a href="#p1">Phase 1 — Node.js Core &amp; Express API</a></li>
+        <li><a href="#p2">Phase 2 — MongoDB &amp; Mongoose</a></li>
+        <li><a href="#p3">Phase 3 — Redis, Queues &amp; BullMQ</a></li>
+        <li><a href="#p4">Phase 4 — Real-Time (WebSockets &amp; Socket.IO)</a></li>
+        <li><a href="#p5">Phase 5 — Security Hardening</a></li>
+        <li><a href="#p6">Phase 6 — Production Patterns &amp; DevOps</a></li>
+        <li><a href="#map">Full Architecture Map</a></li>
+        <li><a href="#files">File-by-File Breakdown</a></li>
+        <li><a href="#resources">Curated Resources</a></li>
+    </ol>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 0
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase" id="p0"><span class="num">0</span> Foundations — JavaScript &amp; Tooling</h2>
+<div class="duration">~2 weeks</div>
+
+<div class="card green">
+    <h4>Why Start Here?</h4>
+    <p>Every file in this project is JavaScript. You cannot debug a single line without understanding these basics. <strong>Do not skip this phase.</strong></p>
+</div>
+
+<h3>0.1 Modern JavaScript (ES6+)</h3>
+<div class="card blue">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">5 days</span>
+    <ul>
+        <li><strong><code>const</code> / <code>let</code></strong> — block-scoped variable declarations (no more <code>var</code>)</li>
+        <li><strong>Arrow Functions</strong> — <code>(a, b) =&gt; a + b</code> — concise syntax used in every callback</li>
+        <li><strong>Template Literals</strong> — <code>`Hello ${name}`</code> — string interpolation used in logging</li>
+        <li><strong>Destructuring</strong> — <code>const { url, payload } = job.data</code> — object/array unpacking</li>
+        <li><strong>Spread Operator</strong> — <code>{ ...obj, newKey: val }</code> — merging/cloning objects</li>
+        <li><strong>Optional Chaining</strong> — <code>error.response?.status</code> — safe property access</li>
+        <li><strong>Nullish Coalescing</strong> — <code>data.value ?? null</code> — default only for null/undefined</li>
+        <li><strong>Ternary Operator</strong> — <code>isFinal ? 'DEAD' : 'FAILED'</code> — inline conditionals</li>
+        <li><strong><code>Set</code></strong> — <code>new Set([...])</code> — O(1) membership checks (used in PII redaction)</li>
+    </ul>
+</div>
+
+<h3>0.2 Asynchronous JavaScript</h3>
+<div class="card blue">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Callbacks</strong> → <strong>Promises</strong> → <strong><code>async</code>/<code>await</code></strong> — the entire evolution</li>
+        <li><strong><code>try</code>/<code>catch</code>/<code>finally</code></strong> — error handling with async functions</li>
+        <li><strong>Promise chaining</strong> — <code>.then().catch()</code> — used in MongoDB connect</li>
+        <li><strong><code>AbortController</code></strong> — cancelling async operations (Axios timeout)</li>
+        <li><strong>Event Loop</strong> — understand why <code>console.log</code> blocks &amp; Pino doesn't</li>
+    </ul>
+</div>
+
+<h3>0.3 Node.js Module System</h3>
+<div class="card blue">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>CommonJS</strong> — <code>require()</code> / <code>module.exports</code> — used in every project file</li>
+        <li><strong>ES Modules</strong> — <code>import</code>/<code>export</code> — used in load test (k6)</li>
+        <li><strong><code>require.cache</code></strong> — how the tests inject mock Redis</li>
+        <li><strong><code>package.json</code></strong> — scripts, dependencies, devDependencies, <code>"type": "commonjs"</code></li>
+        <li><strong><code>npm install</code> vs <code>npm ci</code></strong> — why Dockerfile uses <code>ci</code> for reproducibility</li>
+    </ul>
+</div>
+
+<div class="checkpoint">
+    <h4>✅ Phase 0 Checkpoint</h4>
+    <p>You can read any <code>.js</code> file in this project and understand the syntax. You know what <code>async/await</code>, destructuring, and <code>require()</code> do.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 1
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="p1"><span class="num">1</span> Node.js Core &amp; Express API</h2>
+<div class="duration">~3 weeks</div>
+
+<h3>1.1 Node.js Built-in Modules</h3>
+<div class="card blue">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">3 days</span>
+    <table>
+        <tr><th>Module</th><th>Used For</th><th>Project File</th></tr>
+        <tr><td><code>http</code> / <code>https</code></td><td>Create server, custom HTTP Agents</td><td>server.js, worker.js</td></tr>
+        <tr><td><code>crypto</code></td><td>HMAC, UUID, timingSafeEqual, randomBytes</td><td>server.js, worker.js, zombieSweeper.js</td></tr>
+        <tr><td><code>dns</code></td><td>DNS resolution for SSRF protection</td><td>worker.js</td></tr>
+        <tr><td><code>net</code></td><td>IP validation (isIPv4, isIPv6)</td><td>worker.js</td></tr>
+        <tr><td><code>os</code></td><td>Hostname for distributed lock identity</td><td>zombieSweeper.js</td></tr>
+        <tr><td><code>process</code></td><td>Signals, env vars, exit codes</td><td>server.js, worker.js</td></tr>
+    </table>
+</div>
+
+<h3>1.2 Express.js Framework</h3>
+<div class="card blue">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">5 days</span>
+    <ul>
+        <li><strong>Routing</strong> — <code>app.post()</code>, <code>app.patch()</code>, route params (<code>:id</code>)</li>
+        <li><strong>Middleware Chain</strong> — <code>app.use()</code> → JSON parsing → static files → rate limiter → auth → handler</li>
+        <li><strong>Request/Response</strong> — <code>req.body</code>, <code>req.headers</code>, <code>req.params</code>, <code>res.status().json()</code></li>
+        <li><strong>Custom Middleware</strong> — <code>validateApiKey</code> (auth guard)</li>
+        <li><strong>Static File Serving</strong> — <code>express.static('public')</code></li>
+        <li><strong>Body Parser Options</strong> — <code>limit: '1mb'</code>, <code>verify</code> (raw body capture)</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">server.js</span> — Read lines 1–110 to see all of the above in action.</p>
+</div>
+
+<h3>1.3 REST API Design</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">3 days</span>
+    <table>
+        <tr><th>Endpoint</th><th>Method</th><th>Purpose</th><th>Key Concepts</th></tr>
+        <tr><td><code>/api/events</code></td><td>POST</td><td>Ingest webhook</td><td>Idempotency, 202 Accepted, traceId</td></tr>
+        <tr><td><code>/api/events/:id/replay</code></td><td>POST</td><td>Manual retry</td><td>Force retry, job replacement</td></tr>
+        <tr><td><code>/api/events/:id</code></td><td>PATCH</td><td>Update event</td><td>Field mask, partial update, Joi</td></tr>
+    </table>
+</div>
+
+<h3>1.4 Input Validation (Joi)</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>Schema Definition</strong> — <code>Joi.object({ url: Joi.string().uri()... })</code></li>
+        <li><strong><code>stripUnknown: true</code></strong> — silently drops unrecognised fields (defense-in-depth)</li>
+        <li><strong><code>allowUnknown: true</code></strong> — passes extra fields through on ingestion</li>
+        <li><strong>Custom Error Messages</strong> — <code>.messages({ 'string.uri': '...' })</code></li>
+    </ul>
+</div>
+
+<h3>1.5 HTTP Client (Axios)</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong><code>axios.post()</code></strong> — outbound webhook delivery</li>
+        <li><strong>Custom Headers</strong> — <code>X-Signature</code>, <code>X-Webhook-Trace-Id</code></li>
+        <li><strong><code>transformRequest</code></strong> — prevent Axios from re-serializing strings</li>
+        <li><strong>Custom Agents</strong> — <code>httpAgent</code>/<code>httpsAgent</code> with pinned DNS lookup</li>
+        <li><strong><code>AbortController</code> + <code>signal</code></strong> — strict 5s wall-clock timeout</li>
+        <li><strong>Safety Guards</strong> — <code>maxContentLength</code>, <code>maxRedirects: 0</code></li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/worker.js</span> — The Axios call is the centrepiece of the worker processor.</p>
+</div>
+
+<div class="checkpoint">
+    <h4>✅ Phase 1 Checkpoint</h4>
+    <p>You can build a basic Express API with CRUD routes, Joi validation, and outbound HTTP calls. You understand middleware, raw body capture, and request lifecycle.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 2
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="p2"><span class="num">2</span> MongoDB &amp; Mongoose</h2>
+<div class="duration">~2 weeks</div>
+
+<h3>2.1 MongoDB Fundamentals</h3>
+<div class="card green">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Documents &amp; Collections</strong> — JSON-like storage, flexible schema</li>
+        <li><strong>CRUD Operations</strong> — insert, find, update, delete</li>
+        <li><strong>Query Operators</strong> — <code>$set</code>, <code>$push</code>, <code>$inc</code>, <code>$ne</code>, <code>$lt</code>, <code>$gt</code></li>
+        <li><strong>Array Operators</strong> — <code>$each</code>, <code>$slice</code> (bounded log arrays)</li>
+        <li><strong>Upsert</strong> — <code>{ upsert: true }</code> with <code>$setOnInsert</code></li>
+    </ul>
+</div>
+
+<h3>2.2 Mongoose ODM</h3>
+<div class="card green">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">4 days</span>
+    <ul>
+        <li><strong>Schema Definition</strong> — types, enums, defaults, <code>required</code>, <code>immutable</code></li>
+        <li><strong>Model Creation</strong> — <code>mongoose.model('Event', schema)</code></li>
+        <li><strong>Indexes</strong>:
+            <ul>
+                <li><em>Unique Sparse</em> — <code>idempotencyKey</code> (dedup without forcing the field)</li>
+                <li><em>TTL</em> — <code>createdAt</code> with <code>expireAfterSeconds</code> (auto-purge)</li>
+                <li><em>Regular</em> — <code>traceId</code> for fast lookups</li>
+            </ul>
+        </li>
+        <li><strong>Connection Pooling</strong> — <code>maxPoolSize</code> to prevent exhausting DB tier limits</li>
+        <li><strong>Statics</strong> — <code>Event.MAX_LOGS</code>, <code>Event.TTL_SECONDS</code></li>
+        <li><strong><code>.lean()</code></strong> — returns plain objects (no Mongoose overhead) for read-only queries</li>
+        <li><strong>Timestamps</strong> — <code>{ timestamps: true }</code> for auto <code>createdAt</code>/<code>updatedAt</code></li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/models/Event.js</span> <span class="tag tag-file">src/db.js</span></p>
+</div>
+
+<h3>2.3 Advanced Mongo Patterns in This Project</h3>
+<div class="card amber">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Atomic <code>findOneAndUpdate</code></strong> — race-safe force-retry path</li>
+        <li><strong>E11000 Duplicate Key</strong> — leveraged for idempotency collision detection</li>
+        <li><strong>Paginated <code>_id</code> Range Scan</strong> — <code>{ _id: { $gt: lastId } }.sort({_id:1}).limit(N)</code></li>
+        <li><strong><code>bulkWrite</code></strong> — batched operations in migration script</li>
+        <li><strong>Pre-generated ObjectId</strong> — <code>new mongoose.Types.ObjectId()</code> before insert (used as BullMQ jobId)</li>
+    </ul>
+</div>
+
+<div class="milestone">
+    <h4>🏆 Milestone: You can now understand the entire data layer</h4>
+    <ul>
+        <li>Read <code>src/models/Event.js</code> — the schema is the single source of truth</li>
+        <li>Read <code>src/batchProcessor.js</code> — the <code>persistState()</code> function</li>
+        <li>Understand why payload is stored as a <strong>String</strong> (NoSQL injection prevention)</li>
+    </ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 3
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="p3"><span class="num">3</span> Redis, Job Queues &amp; BullMQ</h2>
+<div class="duration">~3 weeks</div>
+
+<h3>3.1 Redis Fundamentals</h3>
+<div class="card green">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Key-Value Store</strong> — GET, SET, INCR, DEL, EXPIRE</li>
+        <li><strong>TTL / Key Expiration</strong> — automatic cleanup</li>
+        <li><strong>Pub/Sub</strong> — publish/subscribe messaging (Socket.IO adapter)</li>
+        <li><strong>Connection Management</strong> — <code>redis.on('connect')</code>, <code>redis.on('error')</code>, <code>redis.quit()</code></li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/redis.js</span> — ioredis client setup.</p>
+</div>
+
+<h3>3.2 ioredis Client</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong><code>new Redis(config)</code></strong> — connection options, <code>maxRetriesPerRequest: null</code></li>
+        <li><strong><code>redis.defineCommand()</code></strong> — register custom Lua scripts</li>
+        <li><strong><code>pubClient.duplicate()</code></strong> — separate subscriber connection</li>
+        <li><strong><code>SET key value EX ttl NX</code></strong> — conditional set (distributed locking)</li>
+    </ul>
+</div>
+
+<h3>3.3 BullMQ Job Queue</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">5 days</span>
+    <ul>
+        <li><strong><code>Queue</code></strong> — <code>myQueue.add('name', data, options)</code> — the producer</li>
+        <li><strong><code>Worker</code></strong> — <code>new Worker('queue', processor, opts)</code> — the consumer</li>
+        <li><strong><code>QueueEvents</code></strong> — <code>.on('completed')</code>, <code>.on('failed')</code> — the observer</li>
+        <li><strong>Retry Config</strong> — <code>attempts: 5</code>, <code>backoff: { type: 'exponential', delay: 1000 }</code></li>
+        <li><strong><code>jobId</code></strong> — using MongoDB <code>_id</code> as jobId for deduplication</li>
+        <li><strong><code>removeOnComplete</code> / <code>removeOnFail</code></strong> — cleanup strategy</li>
+        <li><strong>Concurrency &amp; Rate Limiting</strong> — <code>concurrency: 50</code>, <code>limiter: { max: 50, duration: 1000 }</code></li>
+        <li><strong>Dedicated Connection</strong> — BullMQ needs its own Redis connection (blocking commands)</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/queue.js</span> <span class="tag tag-file">src/worker.js</span></p>
+</div>
+
+<h3>3.4 Lua Scripting (Atomic Operations)</h3>
+<div class="card amber">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>Why Lua?</strong> — Redis executes Lua scripts atomically (no race conditions)</li>
+        <li><strong><code>redis.defineCommand('tripCircuit')</code></strong> — INCR → threshold check → SET OPEN, all in one atomic step</li>
+        <li><strong>KEYS &amp; ARGV</strong> — Lua script parameters</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/circuitBreaker.js</span></p>
+</div>
+
+<div class="flow">
+    <div class="flow-box">API receives POST</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">Save to MongoDB</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">addToQueue()</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">BullMQ (Redis)</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">Worker picks up</div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-box">Axios POST</div>
+</div>
+
+<div class="checkpoint">
+    <h4>✅ Phase 3 Checkpoint</h4>
+    <p>You understand the full Producer → Queue → Consumer pipeline. You can explain how BullMQ retries with exponential backoff, and why Lua scripts are needed for atomic circuit breaker logic.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 4
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="p4"><span class="num">4</span> Real-Time Communication</h2>
+<div class="duration">~1.5 weeks</div>
+
+<h3>4.1 WebSockets &amp; Socket.IO</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Server-Side</strong> — <code>new Server(httpServer)</code>, <code>io.emit()</code>, <code>io.use()</code> middleware</li>
+        <li><strong>Client-Side</strong> — <code>io({ auth: { token } })</code>, <code>socket.on('event')</code></li>
+        <li><strong>Events</strong> — <code>job-update-batch</code>, <code>dashboard-stats</code>, <code>connect</code></li>
+        <li><strong>Authentication</strong> — middleware validates <code>DASHBOARD_TOKEN</code> before connecting</li>
+    </ul>
+</div>
+
+<h3>4.2 Redis Adapter (Horizontal Scaling)</h3>
+<div class="card amber">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>Problem</strong> — Without adapter, <code>io.emit()</code> only reaches clients on THIS process</li>
+        <li><strong>Solution</strong> — <code>@socket.io/redis-adapter</code> publishes events to Redis Pub/Sub → all replicas get it</li>
+        <li><strong>Setup</strong> — <code>pubClient</code> + <code>subClient = pubClient.duplicate()</code></li>
+    </ul>
+</div>
+
+<h3>4.3 WebSocket Batching</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">1 day</span>
+    <ul>
+        <li><strong>Problem</strong> — emitting 5,000 individual WS messages/sec freezes browsers</li>
+        <li><strong>Solution</strong> — buffer updates in array, flush every 500ms as single batch</li>
+        <li><strong>Implementation</strong> — <code>enqueueJobUpdate()</code> + <code>setInterval</code> flush</li>
+    </ul>
+</div>
+
+<h3>4.4 Frontend Dashboard</h3>
+<div class="card green">
+    <span class="tag tag-beginner">Beginner</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>CSS Custom Properties</strong> — <code>--bg</code>, <code>--accent</code>, <code>--success</code> for theming</li>
+        <li><strong>CSS Grid + Flexbox</strong> — responsive card layout</li>
+        <li><strong>DOM Manipulation</strong> — <code>createElement</code>, <code>prepend</code>, <code>innerHTML</code></li>
+        <li><strong>XSS Protection</strong> — <code>escapeHTML()</code> before any DOM injection</li>
+        <li><strong>DOM Size Cap</strong> — max 50 cards, oldest removed with <code>lastChild.remove()</code></li>
+        <li><strong>Fetch API</strong> — <code>fetch()</code> for replay trigger</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">public/index.html</span></p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 5
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="p5"><span class="num">5</span> Security Hardening</h2>
+<div class="duration">~2.5 weeks</div>
+
+<div class="card red">
+    <h4>⚠️ Why Security Matters Here</h4>
+    <p>This project accepts untrusted URLs from API consumers and makes HTTP requests to them. Without hardening, an attacker could probe your internal network (SSRF), steal credentials, or crash your infrastructure.</p>
+</div>
+
+<h3>5.1 Authentication &amp; Authorization</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>API Key Auth</strong> — <code>x-api-key</code> header checked via <code>safeCompare()</code></li>
+        <li><strong>Separate Dashboard Token</strong> — read-only, never exposes backend key</li>
+        <li><strong>Constant-Time Comparison</strong> — <code>crypto.timingSafeEqual</code> defeats timing attacks</li>
+        <li><strong>URL Token Scrubbing</strong> — <code>history.replaceState</code> removes <code>?token=</code> from URL</li>
+    </ul>
+</div>
+
+<h3>5.2 HMAC Webhook Signing</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>What</strong> — <code>crypto.createHmac('sha256', secret).update(body).digest('hex')</code></li>
+        <li><strong>Why</strong> — receivers verify the request really came from us</li>
+        <li><strong>Raw Body</strong> — sign exact bytes, not re-serialized version</li>
+        <li><strong><code>transformRequest: [d =&gt; d]</code></strong> — prevent Axios from re-serializing</li>
+    </ul>
+</div>
+
+<h3>5.3 SSRF Protection</h3>
+<div class="card red">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>DNS-Resolution Based</strong> — resolve hostname → check <em>resolved IP</em> vs private ranges</li>
+        <li><strong>Why Not Regex?</strong> — <code>127.0.0.1.nip.io</code>, <code>0177.0.0.1</code>, <code>2130706433</code> all bypass string checks</li>
+        <li><strong>RFC Ranges Blocked</strong> — RFC-1918, RFC-5735, RFC-4193, loopback, link-local, CGN</li>
+        <li><strong>DNS Pinning</strong> — custom <code>Agent.lookup()</code> prevents TOCTOU / DNS rebinding</li>
+        <li><strong>Fail-Closed</strong> — unrecognised IP format → blocked by default</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/worker.js</span> — <code>isPrivateIP()</code> and <code>assertNotPrivate()</code></p>
+</div>
+
+<h3>5.4 Rate Limiting</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">1 day</span>
+    <ul>
+        <li><strong><code>express-rate-limit</code></strong> — per-IP sliding window</li>
+        <li><strong><code>rate-limit-redis</code></strong> — shared counters across replicas</li>
+        <li><strong>Config</strong> — 1000 req/min/IP, standard headers, custom error response</li>
+    </ul>
+</div>
+
+<h3>5.5 Injection &amp; Data Protection</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>NoSQL Injection</strong> — payload stored as String (not Object), Joi rejects <code>$</code> operators</li>
+        <li><strong>XSS</strong> — <code>escapeHTML()</code> in dashboard, <code>stripUnknown</code> in PATCH</li>
+        <li><strong>PII Redaction</strong> — Pino <code>redact</code> paths + <code>redact()</code> / <code>redactPayloadString()</code> utility</li>
+        <li><strong>Payload Size Limit</strong> — 1MB cap prevents OOM</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/utils/redact.js</span> <span class="tag tag-file">src/utils/logger.js</span></p>
+</div>
+
+<div class="milestone">
+    <h4>🏆 Milestone: Full Security Audit Understanding</h4>
+    <ul>
+        <li>You can trace every validation step from request arrival to webhook delivery</li>
+        <li>You understand timing attacks, SSRF, DNS rebinding, NoSQL injection, and XSS</li>
+    </ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PHASE 6
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="p6"><span class="num">6</span> Production Patterns &amp; DevOps</h2>
+<div class="duration">~3 weeks</div>
+
+<h3>6.1 Architectural Patterns</h3>
+<div class="card purple">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">5 days</span>
+    <table>
+        <tr><th>Pattern</th><th>Where</th><th>Why</th></tr>
+        <tr><td><strong>Circuit Breaker</strong></td><td>circuitBreaker.js</td><td>Stops hammering failing endpoints</td></tr>
+        <tr><td><strong>Outbox / Zombie Sweeper</strong></td><td>zombieSweeper.js</td><td>Recovers from dual-write failures</td></tr>
+        <tr><td><strong>Distributed Lock</strong></td><td>zombieSweeper.js</td><td>Single-leader sweeping across replicas</td></tr>
+        <tr><td><strong>Idempotency</strong></td><td>Event model</td><td>Unique sparse index prevents duplicate processing</td></tr>
+        <tr><td><strong>State Machine</strong></td><td>Event lifecycle</td><td>PENDING → COMPLETED / FAILED → DEAD</td></tr>
+        <tr><td><strong>Dead Letter Queue</strong></td><td>worker.js</td><td>DEAD jobs retained for debugging</td></tr>
+        <tr><td><strong>Field Mask</strong></td><td>fieldMask.js</td><td>Google API–style partial updates</td></tr>
+        <tr><td><strong>Write Amplification Reduction</strong></td><td>worker.js</td><td>Removed intermediate PROCESSING write</td></tr>
+    </table>
+</div>
+
+<h3>6.2 Resilience &amp; Error Handling</h3>
+<div class="card purple">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Error Classification</strong> — <code>classifyError()</code> → TRANSIENT vs PERMANENT</li>
+        <li><strong>Exponential Backoff</strong> — 1s → 2s → 4s → 8s → 16s retry delays</li>
+        <li><strong>Graceful Shutdown</strong> (Ordered Drain):
+            <ol>
+                <li>Stop accepting connections</li>
+                <li>Drain in-flight HTTP requests</li>
+                <li>Close database connections</li>
+                <li>Close Redis</li>
+                <li>Exit process</li>
+            </ol>
+        </li>
+        <li><strong>15-Second Force-Exit</strong> — safety net for hung connections</li>
+        <li><strong>Fail-Fast Boot</strong> — crash on missing environment variables</li>
+        <li><strong><code>uncaughtException</code> / <code>unhandledRejection</code></strong> — catch-all safety nets</li>
+    </ul>
+</div>
+
+<h3>6.3 Structured Logging (Pino)</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>Why Not <code>console.log</code>?</strong> — synchronous, blocks event loop at high throughput</li>
+        <li><strong>Pino</strong> — async JSON logging via worker thread, 5–10× faster than console</li>
+        <li><strong>Log Levels</strong> — <code>fatal</code>, <code>error</code>, <code>warn</code>, <code>info</code>, <code>debug</code></li>
+        <li><strong>Structured Data</strong> — <code>logger.info({ traceId, dbId }, 'message')</code></li>
+        <li><strong>Built-in Redaction</strong> — <code>redact.paths</code> for PII scrubbing at serialization</li>
+        <li><strong>pino-pretty</strong> — human-readable output in development</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">src/utils/logger.js</span></p>
+</div>
+
+<h3>6.4 Docker &amp; Docker Compose</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">3 days</span>
+    <ul>
+        <li><strong>Dockerfile</strong>:
+            <ul>
+                <li>Alpine base image (minimal footprint)</li>
+                <li><code>npm ci --omit=dev</code> (deterministic, production-only)</li>
+                <li><code>USER node</code> (non-root container)</li>
+                <li>Layer caching (copy package*.json first)</li>
+            </ul>
+        </li>
+        <li><strong>docker-compose.yml</strong>:
+            <ul>
+                <li>4 services: api, worker, redis, mongo</li>
+                <li>Named volumes for data persistence</li>
+                <li>Environment variable injection from <code>.env</code></li>
+                <li>Service dependencies (<code>depends_on</code>)</li>
+                <li>Port mapping (3000, 6379, 27017)</li>
+            </ul>
+        </li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">Dockerfile</span> <span class="tag tag-file">docker-compose.yml</span></p>
+</div>
+
+<h3>6.5 Testing</h3>
+<div class="card blue">
+    <span class="tag tag-intermediate">Intermediate</span> <span class="tag tag-time">2 days</span>
+    <ul>
+        <li><strong>Node.js Built-in Test Runner</strong> — <code>node:test</code> (<code>describe</code>, <code>test</code>, <code>beforeEach</code>)</li>
+        <li><strong><code>node:assert</code></strong> — <code>strictEqual</code>, <code>deepStrictEqual</code>, <code>ok</code></li>
+        <li><strong>Manual Mocking</strong> — inject fake Redis via <code>require.cache</code> override</li>
+        <li><strong>Lua Script Mock</strong> — JS reimplementation of <code>tripCircuit</code></li>
+        <li><strong>Call Verification</strong> — inspect <code>mockRedis._calls</code> array</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">tests/circuitBreaker.test.js</span> <span class="tag tag-file">tests/worker.test.js</span> <span class="tag tag-file">tests/fieldMask.test.js</span></p>
+</div>
+
+<h3>6.6 Load Testing (k6)</h3>
+<div class="card amber">
+    <span class="tag tag-advanced">Advanced</span> <span class="tag tag-time">1 day</span>
+    <ul>
+        <li><strong>Grafana k6</strong> — scenario-based load testing</li>
+        <li><strong><code>shared-iterations</code></strong> — 5000 request spread across 50 VUs</li>
+        <li><strong>Thresholds</strong> — define pass/fail criteria for latency</li>
+    </ul>
+    <p style="margin-top:8px;"><span class="tag tag-file">loadtest.js</span></p>
+</div>
+
+<div class="checkpoint">
+    <h4>✅ Phase 6 Checkpoint — You "Get" the Whole Project</h4>
+    <p>You can explain why each design decision was made, trace a request from ingestion to webhook delivery, understand every failure mode, and deploy with Docker.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     ARCHITECTURE MAP
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="map"><span class="num">★</span> Full Architecture Map</h2>
+
+<div class="card">
+    <h4>Request Lifecycle (Happy Path)</h4>
+    <div class="flow">
+        <div class="flow-box" style="background:#dcfce7;color:#166534;">Client POST</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">Rate Limiter</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">API Key Auth</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">Joi Validate</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="background:#dcfce7;color:#166534;">MongoDB Save</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="background:#fef3c7;color:#92400e;">BullMQ Add</div>
+    </div>
+    <div class="flow" style="margin-top:4px;">
+        <div class="flow-box" style="background:#fef3c7;color:#92400e;">Worker Pick</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">Circuit Check</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="background:#fee2e2;color:#991b1b;">SSRF Guard</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">HMAC Sign</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">DNS Pin</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="background:#dcfce7;color:#166534;">Axios POST</div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box" style="background:#dcfce7;color:#166534;">persistState</div>
+    </div>
+</div>
+
+<div class="card">
+    <h4>Failure &amp; Recovery Paths</h4>
+    <table>
+        <tr><th>Failure</th><th>Detection</th><th>Recovery</th></tr>
+        <tr><td>Network Error (ECONNREFUSED)</td><td><code>classifyError</code> → TRANSIENT</td><td>BullMQ retry (exp. backoff)</td></tr>
+        <tr><td>HTTP 400 Bad Request</td><td><code>classifyError</code> → PERMANENT</td><td>Abort, mark FAILED_PERMANENT</td></tr>
+        <tr><td>HTTP 429 Rate Limited</td><td><code>classifyError</code> → TRANSIENT</td><td>BullMQ retry + circuit breaker</td></tr>
+        <tr><td>Max Retries Exceeded</td><td><code>isFinalAttempt</code></td><td>Mark DEAD, stop retrying</td></tr>
+        <tr><td>Circuit Breaker OPEN</td><td><code>getCircuitStatus()</code></td><td>Fast-fail, retry later</td></tr>
+        <tr><td>SSRF Attempt</td><td><code>assertNotPrivate()</code></td><td>Abort permanently</td></tr>
+        <tr><td>Mongo write fails</td><td>BullMQ sees thrown error</td><td>BullMQ retries entire job</td></tr>
+        <tr><td>Zombie (Mongo OK, Redis fail)</td><td>Zombie Sweeper</td><td>Re-queue PENDING events</td></tr>
+        <tr><td>Tarpit server</td><td><code>AbortController</code> 5s</td><td>AbortError → classify → retry</td></tr>
+    </table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     FILE BREAKDOWN
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="files"><span class="num">📁</span> File-by-File Breakdown</h2>
+
+<div class="card">
+<table>
+    <tr><th>File</th><th>Role</th><th>Key Concepts to Study</th></tr>
+    <tr><td><code>server.js</code></td><td>API Server (Express)</td><td>Middleware, routes, WS batching, graceful shutdown</td></tr>
+    <tr><td><code>src/worker.js</code></td><td>Background Worker</td><td>BullMQ processor, SSRF, HMAC, error classification, DEAD state</td></tr>
+    <tr><td><code>src/db.js</code></td><td>MongoDB Connection</td><td>Connection pooling, Pino logger</td></tr>
+    <tr><td><code>src/redis.js</code></td><td>Redis Connection</td><td>ioredis setup, event listeners</td></tr>
+    <tr><td><code>src/queue.js</code></td><td>BullMQ Queue</td><td>Producer config, jobId, backoff</td></tr>
+    <tr><td><code>src/batchProcessor.js</code></td><td>State Persistence</td><td>Atomic MongoDB writes, $set/$push/$inc</td></tr>
+    <tr><td><code>src/circuitBreaker.js</code></td><td>Circuit Breaker</td><td>Lua scripting, state machine, half-open</td></tr>
+    <tr><td><code>src/models/Event.js</code></td><td>Mongoose Schema</td><td>Indexes, TTL, validators, enums</td></tr>
+    <tr><td><code>src/services/zombieSweeper.js</code></td><td>Outbox Sweeper</td><td>Distributed lock, bounded query, setInterval</td></tr>
+    <tr><td><code>src/utils/logger.js</code></td><td>Pino Logger</td><td>Async logging, redact paths, pino-pretty</td></tr>
+    <tr><td><code>src/utils/redact.js</code></td><td>PII Scrubber</td><td>Recursive deep-clone, Set, JSON parse/stringify</td></tr>
+    <tr><td><code>src/utils/fieldMask.js</code></td><td>Field Mask</td><td>Google API pattern, hasOwnProperty</td></tr>
+    <tr><td><code>src/utils/workerUtils.js</code></td><td>Worker Helpers</td><td>HMAC, error classify, HTTP status sanitize</td></tr>
+    <tr><td><code>public/index.html</code></td><td>Dashboard</td><td>Socket.IO client, CSS Grid, XSS escape, DOM</td></tr>
+    <tr><td><code>Dockerfile</code></td><td>Container Image</td><td>Alpine, npm ci, USER node, layer cache</td></tr>
+    <tr><td><code>docker-compose.yml</code></td><td>Orchestration</td><td>Multi-service, volumes, env injection</td></tr>
+    <tr><td><code>tests/*.test.js</code></td><td>Unit Tests</td><td>node:test, mocking, assertion</td></tr>
+    <tr><td><code>scripts/sanitizeAllEvents.js</code></td><td>Migration</td><td>Bulk write, cursor scan, CLI args</td></tr>
+    <tr><td><code>loadtest.js</code></td><td>Load Testing</td><td>k6, VUs, scenarios</td></tr>
+    <tr><td><code>mock.js</code></td><td>Mock Receiver</td><td>http.createServer, basic HTTP</td></tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     RESOURCES
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb" id="resources"><span class="num">📚</span> Curated Learning Resources</h2>
+
+<h3>Phase 0 — JavaScript</h3>
+<div class="card green">
+    <ul>
+        <li><strong>javascript.info</strong> — The Modern JavaScript Tutorial (free, comprehensive)</li>
+        <li><strong>MDN Web Docs</strong> — <code>async/await</code>, <code>Promise</code>, <code>AbortController</code> references</li>
+        <li><strong>Node.js Docs</strong> — Modules (<code>require</code>), <code>process</code>, <code>Buffer</code>, Timers</li>
+    </ul>
+</div>
+
+<h3>Phase 1 — Express</h3>
+<div class="card green">
+    <ul>
+        <li><strong>expressjs.com</strong> — Official guide (routing, middleware, error handling)</li>
+        <li><strong>Joi Docs</strong> — <code>joi.dev/api</code> for schema validation patterns</li>
+        <li><strong>Axios Docs</strong> — <code>axios-http.com</code> for interceptors, agents, signals</li>
+    </ul>
+</div>
+
+<h3>Phase 2 — MongoDB &amp; Mongoose</h3>
+<div class="card green">
+    <ul>
+        <li><strong>MongoDB University</strong> — Free courses (M001 Basics, M220 Node.js)</li>
+        <li><strong>mongoosejs.com</strong> — Schemas, indexes, middleware, populate, lean</li>
+        <li><strong>MongoDB Docs</strong> — Update operators, indexing strategy, TTL indexes</li>
+    </ul>
+</div>
+
+<h3>Phase 3 — Redis &amp; BullMQ</h3>
+<div class="card green">
+    <ul>
+        <li><strong>redis.io/university</strong> — Free interactive Redis courses</li>
+        <li><strong>docs.bullmq.io</strong> — Queue, Worker, QueueEvents, rate limiting, Lua</li>
+        <li><strong>ioredis GitHub</strong> — <code>defineCommand</code>, Cluster, Pub/Sub</li>
+    </ul>
+</div>
+
+<h3>Phase 4 — Socket.IO</h3>
+<div class="card green">
+    <ul>
+        <li><strong>socket.io/docs</strong> — Server, client, rooms, namespaces, adapters</li>
+        <li><strong>MDN</strong> — WebSocket API fundamentals</li>
+    </ul>
+</div>
+
+<h3>Phase 5 — Security</h3>
+<div class="card green">
+    <ul>
+        <li><strong>OWASP Node.js Cheatsheet</strong> — Top 10 vulnerabilities for Node</li>
+        <li><strong>PortSwigger Web Security Academy</strong> — SSRF, injection, XSS labs (free)</li>
+        <li><strong>Node.js Crypto docs</strong> — HMAC, timingSafeEqual, randomBytes</li>
+    </ul>
+</div>
+
+<h3>Phase 6 — DevOps &amp; Patterns</h3>
+<div class="card green">
+    <ul>
+        <li><strong>Docker Docs</strong> — Dockerfile best practices, Compose, multi-stage builds</li>
+        <li><strong>"Designing Data-Intensive Applications"</strong> by Martin Kleppmann — idempotency, dual-write, distributed systems</li>
+        <li><strong>Microsoft Azure Architecture Patterns</strong> — Circuit Breaker, Retry, Queue-Based Load Leveling</li>
+        <li><strong>k6.io/docs</strong> — Load testing concepts, VUs, scenarios, thresholds</li>
+        <li><strong>Pino Docs</strong> — <code>getpino.io</code> — transports, child loggers, redaction</li>
+    </ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     LEARNING ORDER CHEAT-SHEET
+     ═══════════════════════════════════════════════════════════════ -->
+<h2 class="phase pb"><span class="num">⚡</span> Quick-Reference: Optimal Learning Order</h2>
+
+<div class="card">
+<table>
+    <tr><th>Week</th><th>Focus</th><th>Study</th><th>Then Read</th></tr>
+    <tr><td>1–2</td><td>JS + async/await</td><td>ES6 features, Promises, event loop</td><td><code>mock.js</code> (simplest file)</td></tr>
+    <tr><td>3</td><td>Node.js built-ins</td><td>http, crypto, dns, net, process</td><td><code>src/redis.js</code>, <code>src/db.js</code></td></tr>
+    <tr><td>4–5</td><td>Express + Joi</td><td>Routing, middleware, validation</td><td><code>server.js</code> (routes only)</td></tr>
+    <tr><td>6–7</td><td>MongoDB + Mongoose</td><td>CRUD, schemas, indexes, pooling</td><td><code>src/models/Event.js</code>, <code>src/batchProcessor.js</code></td></tr>
+    <tr><td>8–9</td><td>Redis + BullMQ</td><td>Key-value, Pub/Sub, queues, Lua</td><td><code>src/queue.js</code>, <code>src/circuitBreaker.js</code></td></tr>
+    <tr><td>10</td><td>Axios + HTTP</td><td>Agents, signals, headers, HMAC</td><td><code>src/worker.js</code> (processor)</td></tr>
+    <tr><td>11</td><td>Socket.IO</td><td>Server/client, adapters, auth</td><td><code>server.js</code> (WS section), <code>public/index.html</code></td></tr>
+    <tr><td>12–13</td><td>Security</td><td>SSRF, injection, timing, XSS</td><td><code>src/worker.js</code> (SSRF), <code>src/utils/redact.js</code></td></tr>
+    <tr><td>14–15</td><td>Patterns</td><td>Circuit breaker, outbox, idempotency</td><td><code>src/circuitBreaker.js</code>, <code>src/services/zombieSweeper.js</code></td></tr>
+    <tr><td>16</td><td>Docker + Testing</td><td>Dockerfile, Compose, node:test</td><td><code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>tests/</code></td></tr>
+    <tr><td>17–18</td><td>Full Trace</td><td>End-to-end request walkthrough</td><td>All files, top to bottom</td></tr>
+</table>
+</div>
+
+<div class="milestone">
+    <h4>🎓 Final Milestone: Full Project Mastery</h4>
+    <ul>
+        <li>Trace a POST request from client → API → MongoDB → BullMQ → Worker → Axios → target server</li>
+        <li>Explain every failure mode and its recovery mechanism</li>
+        <li>Describe every security layer and what attack it prevents</li>
+        <li>Explain why each architectural pattern was chosen and its trade-offs</li>
+        <li>Deploy the system with <code>docker-compose up</code> and run the load test</li>
+    </ul>
+</div>
+
+<div class="footer">
+    <p><strong>Webhook Dispatcher — Learning Roadmap</strong><br>
+    Generated for Yash Shinde · March 2026<br>
+    Open in browser → <strong>Ctrl+P</strong> → <strong>Save as PDF</strong></p>
+</div>
+
+</body>
+</html>

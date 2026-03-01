@@ -1,196 +1,635 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webhook Dashboard</title>
+    <title>Webhook Dispatcher &mdash; Dashboard</title>
     <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root { --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #3b82f6; --success: #22c55e; --error: #ef4444; --warn: #eab308; }
-        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
-        
-        /* METRICS BAR */
-        .metrics { display: flex; gap: 15px; margin-bottom: 20px; }
-        .metric-card { background: var(--card); padding: 15px; border-radius: 8px; flex: 1; text-align: center; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-        .metric-val { font-size: 2em; font-weight: bold; }
-        .metric-label { font-size: 0.8em; text-transform: uppercase; color: #94a3b8; }
-        .status-ready { color: var(--success); } .status-err { color: var(--error); }
+        *,*::before,*::after{box-sizing:border-box;margin:0;}
+        html{scroll-behavior:smooth;}
+        body{font-family:'Inter',ui-sans-serif,system-ui;background:#09090b;color:#e4e4e7;min-height:100vh;-webkit-font-smoothing:antialiased;}
+        ::-webkit-scrollbar{width:4px;height:4px;}
+        ::-webkit-scrollbar-track{background:transparent;}
+        ::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:99px;}
+        ::-webkit-scrollbar-thumb:hover{background:#52525b;}
 
-        /* LOG FEED */
-        #events { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-        .event-card { background: var(--card); padding: 15px; border-radius: 8px; border-left: 5px solid var(--accent); transition: all 0.3s ease; }
-        .event-header { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.9em; color: #94a3b8; }
-        .status-badge { padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
-        
-        /* STATUS COLORS */
-        .status-Pending { border-color: var(--warn); } 
-        .status-Pending .status-badge { background: #422006; color: var(--warn); }
-        
-        .status-Completed, .status-Updated { border-color: var(--success); }
-        .status-Completed .status-badge, .status-Updated .status-badge { background: #052e16; color: var(--success); }
-        
-        .status-Failed, .status-aborted { border-color: var(--error); }
-        .status-Failed .status-badge, .status-aborted .status-badge { background: #450a0a; color: var(--error); }
+        @keyframes fadeIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+        @keyframes ripple{0%{transform:scale(1);opacity:0.6;}100%{transform:scale(2.6);opacity:0;}}
+        @keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
+        @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 
-        /* REPLAY BUTTON */
-        .replay-btn {
-            background: var(--accent); color: white; border: none; padding: 5px 10px; 
-            border-radius: 4px; cursor: pointer; font-size: 0.8em; margin-top: 10px; width: 100%;
-        }
-        .replay-btn:hover { opacity: 0.9; }
-        
-        pre { background: #000; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.8em; color: #33ff00; }
+        .page-bg{background-color:#09090b;background-image:radial-gradient(ellipse 60% 25% at 50% 0%,rgba(99,102,241,0.07) 0%,transparent 70%);}
+        .site-header{background:rgba(9,9,11,0.88);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid #1c1c1f;}
+        .live-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;}
+        .live-core{width:7px;height:7px;background:#22c55e;border-radius:50%;position:relative;z-index:1;}
+        .live-ring{position:absolute;width:7px;height:7px;background:rgba(34,197,94,0.4);border-radius:50%;animation:ripple 1.8s ease-out infinite;}
+        .offline-dot{display:inline-block;width:7px;height:7px;background:#3f3f46;border-radius:50%;}
+
+        .metric-card{background:#111113;border:1px solid #1e1e21;border-radius:12px;padding:20px;position:relative;overflow:hidden;transition:border-color 0.2s ease;}
+        .metric-card::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.018) 0%,transparent 55%);pointer-events:none;}
+        .metric-card:hover{border-color:#2e2e33;}
+
+        .event-card{background:#111113;border:1px solid #1e1e21;border-radius:10px;padding:16px;position:relative;animation:fadeIn 0.28s ease forwards;transition:border-color 0.2s ease,box-shadow 0.2s ease;overflow:hidden;}
+        .event-card:hover{border-color:#2e2e33;box-shadow:0 4px 24px rgba(0,0,0,0.5);}
+        .event-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:10px 10px 0 0;opacity:0.75;}
+        .card-completed::before{background:#22c55e;}
+        .card-pending::before{background:#f59e0b;}
+        .card-failed::before{background:#f43f5e;}
+        .card-dead::before{background:#a855f7;}
+        .card-default::before{background:#6366f1;}
+
+        .json-block{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:0.695rem;line-height:1.7;background:#0c0c0e;border:1px solid #1e1e21;border-radius:7px;padding:10px 12px;overflow-x:auto;overflow-y:auto;max-height:155px;color:#86efac;white-space:pre;margin-top:11px;letter-spacing:0.01em;}
+
+        .badge{display:inline-flex;align-items:center;gap:5px;font-size:0.695rem;font-weight:600;letter-spacing:0.025em;padding:3px 9px;border-radius:99px;border:1px solid;white-space:nowrap;}
+        .badge-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0;}
+        .badge-completed{background:rgba(34,197,94,0.08);border-color:rgba(34,197,94,0.22);color:#4ade80;} .badge-completed .badge-dot{background:#4ade80;}
+        .badge-pending{background:rgba(245,158,11,0.08);border-color:rgba(245,158,11,0.22);color:#fbbf24;} .badge-pending .badge-dot{background:#fbbf24;}
+        .badge-failed{background:rgba(244,63,94,0.08);border-color:rgba(244,63,94,0.22);color:#fb7185;} .badge-failed .badge-dot{background:#fb7185;}
+        .badge-dead{background:rgba(168,85,247,0.08);border-color:rgba(168,85,247,0.22);color:#c084fc;} .badge-dead .badge-dot{background:#c084fc;}
+        .badge-default{background:rgba(99,102,241,0.08);border-color:rgba(99,102,241,0.22);color:#818cf8;} .badge-default .badge-dot{background:#818cf8;}
+
+        .card-btn{width:100%;margin-top:8px;padding:7px 12px;border-radius:7px;border:1px solid #27272a;color:#a1a1aa;font-size:0.74rem;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:background 0.15s,border-color 0.15s,color 0.15s;font-family:'Inter',ui-sans-serif,system-ui;background:#18181b;}
+        .card-btn:hover{background:#1c1c1f;border-color:#3f3f46;color:#e4e4e7;}
+        .card-btn:active{transform:scale(0.99);}
+        .card-btn:disabled{opacity:0.5;cursor:not-allowed;pointer-events:none;}
+
+        .ai-btn{background:linear-gradient(135deg,#1e1b4b 0%,#172554 100%);border-color:#312e81;color:#a5b4fc;}
+        .ai-btn:hover{border-color:#4338ca;color:#c7d2fe;background:linear-gradient(135deg,#272366 0%,#1e3a5f 100%);}
+
+        .section-label{font-size:0.7rem;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#52525b;}
+        .divider{height:1px;background:#141416;}
+        .stat-num{font-size:2.4rem;font-weight:700;line-height:1;letter-spacing:-0.03em;}
+
+        /* AI Modal */
+        .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);z-index:100;display:flex;align-items:center;justify-content:center;animation:fadeIn 0.15s ease;}
+        .modal-panel{background:#111113;border:1px solid #1e1e21;border-radius:14px;width:95%;max-width:640px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;animation:fadeIn 0.2s ease;}
+        .modal-header{padding:18px 22px;border-bottom:1px solid #1e1e21;display:flex;align-items:center;justify-content:space-between;}
+        .modal-body{padding:22px;overflow-y:auto;flex:1;}
+        .modal-footer{padding:14px 22px;border-top:1px solid #1e1e21;display:flex;gap:8px;justify-content:flex-end;}
+
+        .ai-editor{font-family:'JetBrains Mono',monospace;font-size:0.75rem;line-height:1.7;background:#0c0c0e;border:1px solid #27272a;border-radius:8px;padding:14px;color:#86efac;width:100%;min-height:160px;resize:vertical;outline:none;transition:border-color 0.15s;}
+        .ai-editor:focus{border-color:#4338ca;}
+
+        .confidence-high{color:#4ade80;} .confidence-medium{color:#fbbf24;} .confidence-low{color:#fb7185;}
+
+        .shimmer-bar{height:12px;border-radius:6px;background:linear-gradient(90deg,#1e1e21 25%,#27272a 50%,#1e1e21 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;}
+
+        .apply-btn{padding:8px 16px;border-radius:7px;background:#4f46e5;border:1px solid #6366f1;color:#e0e7ff;font-size:0.78rem;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:background 0.15s,transform 0.1s;font-family:'Inter',sans-serif;}
+        .apply-btn:hover{background:#4338ca;}
+        .apply-btn:active{transform:scale(0.98);}
+        .apply-btn:disabled{opacity:0.5;cursor:not-allowed;}
+
+        .cancel-btn{padding:8px 16px;border-radius:7px;background:#18181b;border:1px solid #27272a;color:#a1a1aa;font-size:0.78rem;font-weight:500;cursor:pointer;transition:background 0.15s;font-family:'Inter',sans-serif;}
+        .cancel-btn:hover{background:#1c1c1f;border-color:#3f3f46;color:#e4e4e7;}
+
+        .spinner{display:inline-block;width:14px;height:14px;border:2px solid #3f3f46;border-top-color:#a5b4fc;border-radius:50%;animation:spin 0.6s linear infinite;}
     </style>
 </head>
-<body>
-    <div class="header">
-        <h1>🚀 Webhook Dashboard</h1>
-        <div id="connection-status">🔴 Disconnected</div>
-    </div>
+<body class="page-bg">
 
-    <div class="metrics">
-        <div class="metric-card">
-            <div class="metric-val" id="count-active">0</div>
-            <div class="metric-label">Active Workers</div>
+<header class="site-header sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0"
+                 style="box-shadow:0 0 0 1px rgba(99,102,241,0.35),0 4px 12px rgba(99,102,241,0.22)">
+                <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+            </div>
+            <span class="text-sm font-semibold text-zinc-100 tracking-tight">Webhook Dispatcher</span>
+            <span class="hidden sm:block w-px h-4 bg-zinc-800"></span>
+            <span class="hidden sm:block text-xs text-zinc-600 font-medium">Operations Dashboard</span>
         </div>
-        <div class="metric-card">
-            <div class="metric-val" id="count-waiting">0</div>
-            <div class="metric-label">Queue Backlog</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-val" id="count-failed" style="color: var(--error)">0</div>
-            <div class="metric-label">Failed (DLQ)</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-val" id="redis-status" class="status-err">OFFLINE</div>
-            <div class="metric-label">Redis Connection</div>
+        <div id="connection-status"
+             class="flex items-center gap-2 px-3 py-1.5 rounded-full border border-zinc-800 bg-zinc-900/80 text-xs font-medium text-zinc-500">
+            <span class="offline-dot"></span>
+            <span>Connecting&hellip;</span>
         </div>
     </div>
+</header>
 
-    <div id="events"></div>
+<main class="max-w-7xl mx-auto px-6 py-10 space-y-10">
 
-    <script>
-        // 🛡️ XSS PROTECTION: Escape third-party data before DOM injection.
-        // Webhook targets can return arbitrary HTML/JS in their responses.
-        const escapeHTML = (str) => String(str).replace(/[&<>'"]/g, 
-            tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag])
-        );
-
-        // 🛡️ DASHBOARD AUTH: Uses a separate read-only DASHBOARD_TOKEN.
-        // The backend API_KEY is NEVER shipped to the browser.
-        //
-        // SECURITY: If the token arrives via URL query param (?token=xyz),
-        // strip it immediately via history.replaceState to prevent it from
-        // persisting in browser history, proxy logs, and Referer headers.
-        const tokenFromUrl = new URLSearchParams(window.location.search).get('token');
-        if (tokenFromUrl) {
-            localStorage.setItem('dashboardToken', tokenFromUrl);
-            const cleanUrl = new URL(window.location);
-            cleanUrl.searchParams.delete('token');
-            window.history.replaceState({}, '', cleanUrl.toString());
-        }
-        const dashboardToken = tokenFromUrl
-            || localStorage.getItem('dashboardToken')
-            || prompt('Enter Dashboard Token:');
-        if (dashboardToken) localStorage.setItem('dashboardToken', dashboardToken);
-
-        const socket = io({
-            auth: { token: dashboardToken }
-        });
-        const eventsContainer = document.getElementById('events');
-        const connStatus = document.getElementById('connection-status');
-
-        socket.on('connect', () => {
-            connStatus.innerText = "🟢 Real-time Feed Active";
-            connStatus.style.color = "var(--success)";
-        });
-
-        // 📊 HANDLE METRICS UPDATES
-        socket.on('dashboard-stats', (stats) => {
-            document.getElementById('count-active').innerText = stats.active;
-            document.getElementById('count-waiting').innerText = stats.waiting;
-            document.getElementById('count-failed').innerText = stats.failed;
-            
-            const redisEl = document.getElementById('redis-status');
-            redisEl.innerText = stats.redisStatus.toUpperCase();
-            redisEl.className = stats.redisStatus === 'ready' ? 'metric-val status-ready' : 'metric-val status-err';
-        });
-
-        // 🔄 HANDLE JOB UPDATES (Batched from server)
-        // The server now sends an array of updates every 500ms instead of
-        // one message per job, preventing event-loop / DOM thrashing at scale.
-        function renderJobUpdate(job) {
-            // 1. Try to find the existing card
-            let card = document.getElementById(`card-${job.id}`);
-
-            // 2. If it doesn't exist, create it and put it at the TOP (Prepend)
-            if (!card) {
-                card = document.createElement('div');
-                card.id = `card-${job.id}`;
-                eventsContainer.prepend(card);
-            }
-            
-            // 3. Update the content (Whether it's new or old, we update properties here)
-            const statusClass = `status-${job.status.split(' ')[0]}`; 
-            card.className = `event-card ${statusClass}`;
-
-            // 4. Button Logic: Show Replay for EVERYTHING except Pending
-            let actionButton = '';
-            if (job.status !== 'Pending' && job.status !== 'active') {
-                actionButton = `<button class="replay-btn" onclick="replayJob('${job.id}')">🔄 Replay Job</button>`;
-            }
-
-            const time = new Date().toLocaleTimeString();
-            const dataPreview = typeof job.response === 'object' ? JSON.stringify(job.response, null, 2) : job.response;
-
-            card.innerHTML = `
-                <div class="event-header">
-                    <span>ID: ${escapeHTML(String(job.id).slice(-6))}</span>
-                    <span class="status-badge">${escapeHTML(job.status)}</span>
+    <section>
+        <p class="section-label mb-4">System Overview</p>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div class="metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-xs font-medium text-zinc-500">Active Workers</p>
+                    <div class="w-6 h-6 rounded-md bg-indigo-500/10 flex items-center justify-center">
+                        <svg class="w-3 h-3 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                        </svg>
+                    </div>
                 </div>
-                <div style="font-size: 0.8em; margin-bottom: 5px; color: #64748b;">${time}</div>
-                <pre>${escapeHTML(dataPreview || 'Processing...')}</pre>
-                ${actionButton}
-            `;
+                <p id="count-active" class="stat-num text-zinc-100">0</p>
+                <p class="text-xs text-zinc-700 mt-2">jobs in flight</p>
+            </div>
+            <div class="metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-xs font-medium text-zinc-500">Queue Backlog</p>
+                    <div class="w-6 h-6 rounded-md bg-amber-500/10 flex items-center justify-center">
+                        <svg class="w-3 h-3 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h10"/>
+                        </svg>
+                    </div>
+                </div>
+                <p id="count-waiting" class="stat-num text-zinc-100">0</p>
+                <p class="text-xs text-zinc-700 mt-2">pending dispatch</p>
+            </div>
+            <div class="metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-xs font-medium text-zinc-500">Dead-Letter</p>
+                    <div class="w-6 h-6 rounded-md bg-rose-500/10 flex items-center justify-center">
+                        <svg class="w-3 h-3 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                    </div>
+                </div>
+                <p id="count-failed" class="stat-num text-rose-400">0</p>
+                <p class="text-xs text-zinc-700 mt-2">unrecoverable</p>
+            </div>
+            <div class="metric-card">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-xs font-medium text-zinc-500">Redis</p>
+                    <div class="w-6 h-6 rounded-md bg-emerald-500/10 flex items-center justify-center">
+                        <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
+                        </svg>
+                    </div>
+                </div>
+                <p id="redis-status" class="stat-num text-rose-400" style="font-size:1.4rem;font-family:'JetBrains Mono',monospace;">OFFLINE</p>
+                <p class="text-xs text-zinc-700 mt-2">connection state</p>
+            </div>
+        </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <section>
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <p class="section-label mb-1">Event Feed</p>
+                <p class="text-lg font-semibold text-zinc-100 tracking-tight">Live Delivery Log</p>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <button id="load-failed-btn" onclick="loadFailedEvents()" class="card-btn" style="width:auto;margin:0;padding:6px 14px;border-color:#312e81;background:linear-gradient(135deg,#1e1b4b 0%,#172554 100%);color:#a5b4fc;font-size:0.72rem;">
+                    <svg style="width:12px;height:12px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Load Failed Events
+                </button>
+                <span id="event-count"
+                      class="text-xs font-mono font-medium text-zinc-600 px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800">
+                    0 events
+                </span>
+            </div>
+        </div>
+
+        <div id="events" class="grid gap-3" style="grid-template-columns:repeat(auto-fill,minmax(290px,1fr));">
+            <div id="empty-state"
+                 class="col-span-full flex flex-col items-center justify-center py-28 text-zinc-700">
+                <div class="w-14 h-14 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-5">
+                    <svg class="w-6 h-6 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                </div>
+                <p class="text-sm font-semibold text-zinc-500">No events yet</p>
+                <p class="text-xs text-zinc-700 mt-1.5 text-center max-w-xs">Webhook delivery events will stream here in real time once the worker processes jobs.</p>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<!-- AI SUGGEST-FIX MODAL (hidden by default) -->
+<div id="ai-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this)closeAiModal()">
+    <div class="modal-panel">
+        <div class="modal-header">
+            <div style="display:flex;align-items:center;gap:10px;">
+                <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;">
+                    <svg style="width:14px;height:14px;color:white;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                    </svg>
+                </div>
+                <div>
+                    <p style="font-size:0.88rem;font-weight:600;color:#e4e4e7;">AI Payload Suggestion</p>
+                    <p id="ai-modal-subtitle" style="font-size:0.7rem;color:#52525b;margin-top:2px;">Analyzing failure...</p>
+                </div>
+            </div>
+            <button onclick="closeAiModal()" style="background:none;border:none;color:#52525b;cursor:pointer;padding:4px;" title="Close">
+                <svg style="width:18px;height:18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        <div class="modal-body" id="ai-modal-body">
+            <!-- Skeleton loading state -->
+            <div id="ai-loading">
+                <p style="font-size:0.78rem;color:#a1a1aa;margin-bottom:16px;display:flex;align-items:center;gap:8px;">
+                    <span class="spinner"></span>
+                    Querying Gemini for a suggested fix...
+                </p>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    <div class="shimmer-bar" style="width:85%;"></div>
+                    <div class="shimmer-bar" style="width:60%;"></div>
+                    <div class="shimmer-bar" style="width:70%;height:80px;"></div>
+                </div>
+            </div>
+
+            <!-- Result (filled by JS) -->
+            <div id="ai-result" style="display:none;">
+                <div id="ai-analysis-box" style="background:#141416;border:1px solid #1e1e21;border-radius:8px;padding:14px;margin-bottom:16px;">
+                    <p style="font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#52525b;margin-bottom:6px;">Analysis</p>
+                    <p id="ai-analysis-text" style="font-size:0.8rem;color:#d4d4d8;line-height:1.6;"></p>
+                </div>
+
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                    <p style="font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#52525b;">Suggested Fix</p>
+                    <span id="ai-confidence-badge" class="badge" style="font-size:0.62rem;"></span>
+                </div>
+                <p id="ai-suggestion-text" style="font-size:0.76rem;color:#a1a1aa;margin-bottom:10px;line-height:1.5;"></p>
+
+                <p style="font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#52525b;margin-bottom:6px;">Editable Payload</p>
+                <textarea id="ai-payload-editor" class="ai-editor" spellcheck="false"></textarea>
+                <p style="font-size:0.66rem;color:#3f3f46;margin-top:6px;">Review and edit the payload above before applying. This will PATCH the event and replay it.</p>
+            </div>
+        </div>
+
+        <div class="modal-footer" id="ai-modal-footer" style="display:none;">
+            <button class="cancel-btn" onclick="closeAiModal()">Cancel</button>
+            <button class="apply-btn" id="ai-apply-btn" onclick="applyAiFix()">
+                <svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+                </svg>
+                Apply &amp; Replay
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // XSS protection
+    const escapeHTML = (str) => String(str).replace(/[&<>'"]/g,
+        tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag])
+    );
+
+    // Dashboard auth (URL -> localStorage, strip from history)
+    const tokenFromUrl = new URLSearchParams(window.location.search).get('token');
+    if (tokenFromUrl) {
+        localStorage.setItem('dashboardToken', tokenFromUrl);
+        const cleanUrl = new URL(window.location);
+        cleanUrl.searchParams.delete('token');
+        window.history.replaceState({}, '', cleanUrl.toString());
+    }
+    const dashboardToken = tokenFromUrl
+        || localStorage.getItem('dashboardToken')
+        || prompt('Enter Dashboard Token:');
+    if (dashboardToken) localStorage.setItem('dashboardToken', dashboardToken);
+
+    // Socket.IO
+    const socket = io({ auth: { token: dashboardToken } });
+
+    const eventsContainer = document.getElementById('events');
+    const connStatus      = document.getElementById('connection-status');
+    const emptyState      = document.getElementById('empty-state');
+    const eventCountEl    = document.getElementById('event-count');
+    let   eventCount      = 0;
+
+    // Cached API key (prompted once per session, reused for subsequent calls)
+    let cachedApiKey = null;
+    function getApiKey() {
+        if (cachedApiKey) return cachedApiKey;
+        const key = prompt('Enter API Key to authorize this action:');
+        if (key) cachedApiKey = key;
+        return key;
+    }
+
+    socket.on('connect', () => {
+        connStatus.innerHTML = '<span class="live-wrap"><span class="live-ring"></span><span class="live-core"></span></span><span class="text-emerald-500 font-semibold ml-1">Live</span>';
+    });
+
+    socket.on('disconnect', () => {
+        connStatus.innerHTML = '<span class="offline-dot"></span><span class="ml-1.5">Disconnected</span>';
+    });
+
+    // Metrics
+    socket.on('dashboard-stats', (stats) => {
+        document.getElementById('count-active').innerText  = stats.active;
+        document.getElementById('count-waiting').innerText = stats.waiting;
+        document.getElementById('count-failed').innerText  = stats.failed;
+        const redisEl = document.getElementById('redis-status');
+        const isReady = stats.redisStatus === 'ready';
+        redisEl.innerText = stats.redisStatus.toUpperCase();
+        redisEl.className = isReady ? 'stat-num text-emerald-400' : 'stat-num text-rose-400';
+        redisEl.style.cssText = "font-size:1.4rem;font-family:'JetBrains Mono',monospace;";
+    });
+
+    // Status styling
+    function getStatusConfig(rawStatus) {
+        const s = rawStatus?.toLowerCase?.() || '';
+        if (s.includes('completed'))
+            return { cardClass: 'card-completed', badgeClass: 'badge badge-completed' };
+        if (s.includes('pending') || s.includes('active'))
+            return { cardClass: 'card-pending',   badgeClass: 'badge badge-pending'   };
+        if (s.includes('dead'))
+            return { cardClass: 'card-dead',      badgeClass: 'badge badge-dead'      };
+        if (s.includes('failed') || s.includes('aborted') || s.includes('permanent'))
+            return { cardClass: 'card-failed',    badgeClass: 'badge badge-failed'    };
+        return { cardClass: 'card-default', badgeClass: 'badge badge-default' };
+    }
+
+    // Determine if a status qualifies for AI suggest-fix
+    function isFailedStatus(status) {
+        const s = status?.toLowerCase?.() || '';
+        return s.includes('failed') || s.includes('dead') || s.includes('aborted') || s.includes('permanent');
+    }
+
+    // Render a job card
+    function renderJobUpdate(job) {
+        if (emptyState && emptyState.parentNode) emptyState.remove();
+
+        let card    = document.getElementById(`card-${job.id}`);
+        const isNew = !card;
+
+        if (isNew) {
+            card    = document.createElement('div');
+            card.id = `card-${job.id}`;
+            eventsContainer.prepend(card);
+            eventCount++;
+            eventCountEl.textContent = `${eventCount} event${eventCount !== 1 ? 's' : ''}`;
         }
 
-        // Batched event listener — receives an array of updates
-        socket.on('job-update-batch', (batch) => {
-            if (!Array.isArray(batch)) return;
-            batch.forEach(renderJobUpdate);
-            // Cleanup: Keep list size manageable
-            while (eventsContainer.children.length > 50) {
-                eventsContainer.lastChild.remove();
-            }
+        const cfg  = getStatusConfig(job.status);
+        const time = new Date().toLocaleTimeString('en-US', {
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
         });
+        const dataPreview = typeof job.response === 'object'
+            ? JSON.stringify(job.response, null, 2)
+            : job.response;
 
-        // Backward-compat: also handle individual events (e.g. during migration)
-        socket.on('job-update', renderJobUpdate);
+        const showReplay = job.status !== 'Pending' && job.status !== 'active';
+        const replayBtn  = showReplay ? `
+            <button class="card-btn" onclick="replayJob('${job.id}')">
+                <svg style="width:12px;height:12px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                Replay Job
+            </button>` : '';
 
-        // 🛠️ REPLAY FUNCTION
-        // Replay is a write operation — requires the full API_KEY.
-        // The dashboard never stores it; the user is prompted each time.
-        async function replayJob(id) {
-            try {
-                const apiKey = prompt('Enter API Key to authorize replay:');
-                if (!apiKey) return;
+        const aiBtn = isFailedStatus(job.status) ? `
+            <button class="card-btn ai-btn" onclick="suggestFix('${job.id}')">
+                <svg style="width:12px;height:12px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                </svg>
+                Suggest Fix with AI
+            </button>` : '';
 
-                const btn = document.querySelector(`#card-${id} button`);
-                if(btn) btn.innerText = "⏳ Queuing...";
-                
-                const res = await fetch(`/api/events/${id}/replay`, {
-                    method: 'POST',
+        card.className = `event-card ${cfg.cardClass}`;
+        card.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <code style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;color:#71717a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                      title="${escapeHTML(String(job.id))}">
+                    ${escapeHTML(String(job.id).slice(-12))}
+                </code>
+                <span class="${cfg.badgeClass}">
+                    <span class="badge-dot"></span>
+                    ${escapeHTML(job.status)}
+                </span>
+            </div>
+            <p style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#3f3f46;margin-top:6px;">${time}</p>
+            <pre class="json-block">${escapeHTML(dataPreview || 'Processing...')}</pre>
+            ${replayBtn}
+            ${aiBtn}
+        `;
+    }
+
+    // Batched updates
+    socket.on('job-update-batch', (batch) => {
+        if (!Array.isArray(batch)) return;
+        batch.forEach(renderJobUpdate);
+        while (eventsContainer.children.length > 50) {
+            eventsContainer.lastChild.remove();
+        }
+    });
+
+    // Backward-compat
+    socket.on('job-update', renderJobUpdate);
+
+    // Load historical failed/dead events from MongoDB
+    async function loadFailedEvents() {
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+
+        const btn = document.getElementById('load-failed-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Loading...';
+
+        try {
+            const statuses = ['FAILED', 'FAILED_PERMANENT', 'DEAD'];
+            let loaded = 0;
+            for (const status of statuses) {
+                const res = await fetch(`/api/events?status=${status}&limit=20`, {
                     headers: { 'x-api-key': apiKey }
                 });
-                
+                if (!res.ok) continue;
                 const data = await res.json();
-                if (!res.ok) alert("Error: " + data.error);
-                
-            } catch (err) {
-                alert("Failed to replay: " + err.message);
+                for (const evt of data.events) {
+                    // Map MongoDB event to the renderJobUpdate format
+                    renderJobUpdate({
+                        id: evt._id,
+                        status: evt.status,
+                        response: evt.lastError || evt.payload || 'No details',
+                        timestamp: evt.updatedAt || evt.createdAt
+                    });
+                    loaded++;
+                }
             }
+            if (loaded === 0) alert('No failed/dead events found in the database.');
+        } catch (err) {
+            alert('Failed to load events: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<svg style="width:12px;height:12px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg> Load Failed Events';
         }
-    </script>
+    }
+
+    // Replay
+    async function replayJob(id) {
+        try {
+            const apiKey = getApiKey();
+            if (!apiKey) return;
+
+            const btn = document.querySelector(`#card-${id} .card-btn:not(.ai-btn)`);
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Queuing...'; }
+
+            const res  = await fetch(`/api/events/${id}/replay`, {
+                method: 'POST',
+                headers: { 'x-api-key': apiKey }
+            });
+            const data = await res.json();
+            if (!res.ok) alert('Error: ' + data.error);
+        } catch (err) {
+            alert('Failed to replay: ' + err.message);
+        }
+    }
+
+    // =============================================
+    // AI SUGGEST-FIX FLOW (Human-in-the-Loop)
+    // =============================================
+    let currentAiEventId = null;
+
+    function closeAiModal() {
+        document.getElementById('ai-modal').style.display = 'none';
+        currentAiEventId = null;
+    }
+
+    async function suggestFix(eventId) {
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+
+        currentAiEventId = eventId;
+
+        // Show modal in loading state
+        const modal = document.getElementById('ai-modal');
+        modal.style.display = 'flex';
+        document.getElementById('ai-loading').style.display = 'block';
+        document.getElementById('ai-result').style.display = 'none';
+        document.getElementById('ai-modal-footer').style.display = 'none';
+        document.getElementById('ai-modal-subtitle').textContent = `Event ...${eventId.slice(-8)} - Analyzing failure...`;
+
+        try {
+            const res = await fetch(`/api/events/${eventId}/suggest-fix`, {
+                method: 'POST',
+                headers: { 'x-api-key': apiKey }
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                document.getElementById('ai-loading').style.display = 'none';
+                document.getElementById('ai-result').style.display = 'block';
+                document.getElementById('ai-confidence-badge').style.display = 'none';
+                document.getElementById('ai-payload-editor').value = '';
+                document.getElementById('ai-modal-footer').style.display = 'none';
+
+                // Context-specific error messages
+                let title = 'Error';
+                let analysis = data.message || data.error || 'Request failed';
+                let suggestion = '';
+
+                if (data.code === 'QUOTA_EXCEEDED' || res.status === 429) {
+                    title = 'Quota Exceeded';
+                    analysis = 'Your Gemini API free tier quota has been exhausted for today.';
+                    suggestion = 'Wait for the daily quota to reset (midnight PT), or add billing at aistudio.google.com to increase your limits.';
+                } else if (data.code === 'INVALID_ID' || res.status === 400) {
+                    title = 'Invalid Event';
+                    analysis = data.message || 'This event ID is not valid or the event is not in a failed state.';
+                    suggestion = 'Try refreshing the dashboard to get the latest events.';
+                } else if (data.code === 'NOT_FOUND' || res.status === 404) {
+                    title = 'Event Not Found';
+                    analysis = 'This event may have been deleted or expired (events auto-purge after 30 days).';
+                    suggestion = 'Refresh the dashboard to see current events.';
+                } else if (data.code === 'GEMINI_NOT_CONFIGURED') {
+                    title = 'AI Not Configured';
+                    analysis = 'The server does not have a Gemini API key set.';
+                    suggestion = 'Add GEMINI_API_KEY to your .env file and restart the server.';
+                } else if (data.code === 'AI_PARSE_ERROR') {
+                    title = 'AI Response Error';
+                    analysis = 'Gemini returned a response that could not be parsed. This can happen occasionally.';
+                    suggestion = 'Try again — the model may return a valid response on retry.';
+                }
+
+                document.getElementById('ai-analysis-text').textContent = analysis;
+                document.getElementById('ai-suggestion-text').textContent = suggestion;
+                document.getElementById('ai-modal-subtitle').textContent = title;
+                return;
+            }
+
+            // Populate result
+            document.getElementById('ai-loading').style.display = 'none';
+            document.getElementById('ai-result').style.display = 'block';
+            document.getElementById('ai-modal-footer').style.display = 'flex';
+
+            document.getElementById('ai-analysis-text').textContent = data.analysis;
+            document.getElementById('ai-suggestion-text').textContent = data.suggestion;
+            document.getElementById('ai-payload-editor').value = JSON.stringify(data.fixedPayload, null, 2);
+            document.getElementById('ai-modal-subtitle').textContent = `Event ...${eventId.slice(-8)} - ${data.currentStatus}`;
+
+            const confBadge = document.getElementById('ai-confidence-badge');
+            confBadge.style.display = 'inline-flex';
+            confBadge.textContent = `${data.confidence} confidence`;
+            confBadge.className = `badge confidence-${data.confidence}`;
+            if (data.confidence === 'high')   confBadge.style.cssText = 'background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.25);color:#4ade80;font-size:0.62rem;';
+            if (data.confidence === 'medium') confBadge.style.cssText = 'background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.25);color:#fbbf24;font-size:0.62rem;';
+            if (data.confidence === 'low')    confBadge.style.cssText = 'background:rgba(244,63,94,0.1);border-color:rgba(244,63,94,0.25);color:#fb7185;font-size:0.62rem;';
+
+        } catch (err) {
+            document.getElementById('ai-loading').style.display = 'none';
+            document.getElementById('ai-result').style.display = 'block';
+            document.getElementById('ai-analysis-text').textContent = 'Failed to reach the AI endpoint: ' + err.message;
+            document.getElementById('ai-suggestion-text').textContent = '';
+            document.getElementById('ai-payload-editor').value = '';
+        }
+    }
+
+    async function applyAiFix() {
+        if (!currentAiEventId) return;
+        const apiKey = getApiKey();
+        if (!apiKey) return;
+
+        const btn = document.getElementById('ai-apply-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Applying...';
+
+        let newPayload;
+        try {
+            newPayload = JSON.parse(document.getElementById('ai-payload-editor').value);
+        } catch (e) {
+            alert('Invalid JSON in the editor. Please fix the syntax and try again.');
+            btn.disabled = false;
+            btn.innerHTML = '<svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg> Apply &amp; Replay';
+            return;
+        }
+
+        try {
+            // Step 1: PATCH the event with the new payload + reset status
+            const patchRes = await fetch(`/api/events/${currentAiEventId}?updateMask=payload,status`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+                body: JSON.stringify({ payload: newPayload, status: 'PENDING' })
+            });
+            if (!patchRes.ok) {
+                const err = await patchRes.json();
+                throw new Error(err.error || err.message || 'PATCH failed');
+            }
+
+            // Step 2: Replay the event
+            const replayRes = await fetch(`/api/events/${currentAiEventId}/replay`, {
+                method: 'POST',
+                headers: { 'x-api-key': apiKey }
+            });
+            if (!replayRes.ok) {
+                const err = await replayRes.json();
+                throw new Error(err.error || err.message || 'Replay failed');
+            }
+
+            // Success - close modal
+            closeAiModal();
+
+        } catch (err) {
+            alert('Apply failed: ' + err.message);
+            btn.disabled = false;
+            btn.innerHTML = '<svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg> Apply &amp; Replay';
+        }
+    }
+</script>
 </body>
 </html>
