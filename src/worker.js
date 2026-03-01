@@ -18,6 +18,7 @@ const { Worker } = require('bullmq');
 const mongoose = require('mongoose');
 const axios = require('axios');
 const logger = require('./utils/logger');
+const { redactPayloadString } = require('./utils/redact');
 
 // Infrastructure
 const redis = require('./redis'); // App-level Redis (circuit breaker, DLQ, etc.)
@@ -158,7 +159,7 @@ const worker = new Worker('webhook-queue', async (job) => {
     // cutting per-job MongoDB writes from 3–4 down to 1.
 
     if (process.env.NODE_ENV !== 'production') {
-        logger.debug({ traceId: tid, dbId }, 'Worker picked up job');
+        logger.debug({ traceId: tid, dbId, payload: redactPayloadString(payloadString) }, 'Worker picked up job');
     }
     try {
         // 4. Circuit Breaker Check

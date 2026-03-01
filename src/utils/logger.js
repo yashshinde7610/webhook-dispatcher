@@ -21,6 +21,13 @@ const logger = pino({
     // 🛡️ PII REDACTION: Pino's built-in redaction replaces sensitive values
     // with "[Redacted]" at the serialization layer — zero-overhead, no
     // intermediate object copies, and impossible to forget.
+    //
+    // ⚠️  LIMITATION: Path redaction only inspects parsed object keys.
+    //    If a payload is logged as a flat JSON *string* (e.g. payloadString),
+    //    Pino redacts the entire value at that path, but `*.email` / `*.token`
+    //    wildcards will NOT descend into the string’s contents.
+    //    → Always use redactPayloadString(str) from src/utils/redact.js
+    //      when logging stringified payloads explicitly.
     redact: {
         paths: [
             'payload',          // Webhook payloads may contain PII

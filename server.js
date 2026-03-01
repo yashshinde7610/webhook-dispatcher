@@ -493,24 +493,52 @@ server.listen(PORT, () => {
 });
 
 // --- 🛑 GRACEFUL SHUTDOWN ---
+// The shutdown sequence MUST drain in-flight HTTP requests before closing
+// database connections.  Without this, a SIGTERM during a POST /api/events
+// would kill the MongoDB connection mid-save → MongoNotConnectedError → 500.
 let shutdownInProgress = false;
 async function gracefulShutdown(signal) {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
     logger.info({ signal }, 'Graceful shutdown initiated');
-    try {
-        stopSweeper();
-        server.close();
-        await mongoose.connection.close();
-        pubClient.disconnect();
-        subClient.disconnect();
-        await redis.quit();
-        logger.info('Shutdown complete');
-        process.exit(0);
-    } catch (err) {
-        logger.error({ err }, 'Shutdown error');
+
+    // 1. Stop the zombie sweeper immediately (no more DB reads)
+    stopSweeper();
+
+    // 2. Stop accepting NEW connections, then wait for in-flight requests
+    //    to complete.  The callback fires only after every open socket has
+    //    been fully served and closed.
+    server.close(async (err) => {
+        if (err) logger.error({ err }, 'Error draining HTTP connections');
+        else     logger.info('HTTP server drained — all requests completed');
+
+        try {
+            // 3. Now safe to close the database (no in-flight queries)
+            logger.info('Closing MongoDB connection...');
+            await mongoose.connection.close();
+
+            // 4. Disconnect Socket.IO Redis adapters
+            pubClient.disconnect();
+            subClient.disconnect();
+
+            // 5. Close the app Redis connection
+            logger.info('Closing Redis connection...');
+            await redis.quit();
+
+            logger.info('Shutdown complete');
+            process.exit(0);
+        } catch (shutdownErr) {
+            logger.error({ err: shutdownErr }, 'Shutdown error');
+            process.exit(1);
+        }
+    });
+
+    // Safety net: if draining takes too long (e.g. hung keep-alive sockets),
+    // force-exit after 15 seconds to avoid blocking orchestrator restarts.
+    setTimeout(() => {
+        logger.error('Forced shutdown after drain timeout (15 s)');
         process.exit(1);
-    }
+    }, 15_000).unref();
 }
 
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
