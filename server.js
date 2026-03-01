@@ -3,8 +3,8 @@ const connectDB = require('./src/db');
 connectDB(); 
 const redis = require('./src/redis'); 
 const crypto = require('crypto'); 
-const chalk = require('chalk');   
-const figlet = require('figlet'); 
+const logger = require('./src/utils/logger');
+const { redact, redactPayloadString } = require('./src/utils/redact');
 
 require('dotenv').config();
 
@@ -13,8 +13,7 @@ require('dotenv').config();
 const REQUIRED_ENV = ['API_KEY', 'DASHBOARD_TOKEN'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {
-    console.error(`❌ FATAL: Missing required environment variables: ${missing.join(', ')}`);
-    console.error('   Set them in .env or your deployment config before starting the server.');
+    logger.fatal({ missing }, 'Missing required environment variables');
     process.exit(1);
 }
 
@@ -27,6 +26,7 @@ const { addToQueue, myQueue } = require('./src/queue');
 const { QueueEvents } = require('bullmq'); 
 const { applyFieldMask } = require('./src/utils/fieldMask'); 
 const Joi = require('joi');
+const { startSweeper, stopSweeper } = require('./src/services/zombieSweeper');
 
 // --- 🛡️ CONSTANT-TIME STRING COMPARISON ---
 // V8's === exits early on the first mismatched character, leaking key length
@@ -161,7 +161,7 @@ queueEvents.on('completed', ({ jobId, returnvalue }) => {
     let realId = jobId;
     if (result && result.dbId) realId = result.dbId;
 
-    console.log(`⚡ Event: Job ${realId} completed!`);
+    logger.info({ jobId: realId }, 'Job completed');
     
     enqueueJobUpdate({ 
         id: realId, 
@@ -176,9 +176,9 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
     try {
         const job = await myQueue.getJob(jobId);
         if (job && job.data.dbId) realId = job.data.dbId; 
-    } catch (e) { console.error("⚠️ Could not fetch failed job details"); }
+    } catch (e) { logger.error({ err: e }, 'Could not fetch failed job details'); }
 
-    console.log(`⚡ Event: Job ${realId} failed!`);
+    logger.info({ jobId: realId, reason: failedReason }, 'Job failed');
     enqueueJobUpdate({ id: realId, status: 'Failed', reason: failedReason });
 });
 
@@ -216,7 +216,7 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
     const traceId = crypto.randomUUID(); 
 
     if (redis.status !== 'ready') {
-        console.error(`[Trace: ${traceId}] 🛑 Critical: Redis is ${redis.status}`);
+        logger.error({ traceId, redisStatus: redis.status }, 'Redis unavailable at ingestion');
         return res.status(503).json({ 
             error: 'Service Unavailable', 
             message: 'Ingestion paused due to infrastructure outage.',
@@ -225,12 +225,12 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
         });
     }
 
-    console.log(`[Trace: ${traceId}] 🔍 Ingress: New Request`); 
+    logger.info({ traceId }, 'Ingress: new request'); 
     
     // 🛡️ SCHEMA VALIDATION: Reject poison pills before they touch Redis/BullMQ
     const { error: validationError } = eventSchema.validate(req.body);
     if (validationError) {
-        console.warn(`[Trace: ${traceId}] 🛑 Validation Failed: ${validationError.message}`);
+        logger.warn({ traceId, err: validationError.message }, 'Validation failed');
         return res.status(400).json({
             error: 'Bad Request',
             message: validationError.details[0].message,
@@ -300,7 +300,7 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
                 deliverySemantics: existing.deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
             });
 
-            enqueueJobUpdate({ id: existing._id, status: 'Pending (Force Retry)', data: existing.payload, traceId });
+            enqueueJobUpdate({ id: existing._id, status: 'Pending (Force Retry)', data: redactPayloadString(existing.payload), traceId });
             return res.status(202).json({
                 status: 'accepted',
                 message: 'Force retry queued',
@@ -329,7 +329,7 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
 
         await eventDoc.save();
 
-        console.log(`[Trace: ${traceId}] 📦 Event persisted & queued. Mongo ID: ${generatedDbId}`);
+        logger.info({ traceId, dbId: generatedDbId.toString() }, 'Event persisted');
 
         // Push to BullMQ
         await addToQueue({ 
@@ -341,8 +341,10 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
         }); 
 
-        // Emit real-time update
-        enqueueJobUpdate({ id: generatedDbId, status: 'Pending', data: jobData, traceId });
+        // 🛡️ PII REDACTION: Never send raw payload to the dashboard.
+        // The dashboard is a read-only observation layer; it does not need
+        // the full payload contents.  Redact sensitive keys before emission.
+        enqueueJobUpdate({ id: generatedDbId, status: 'Pending', data: redact(jobData), traceId });
         
         // Respond to client immediately
         res.status(202).json({ 
@@ -355,7 +357,7 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
     } catch (error) {
         // E11000 = duplicate idempotencyKey → return cached status
         if (error.code === 11000 && idempotencyKey) {
-            console.warn(`[Trace: ${traceId}] 🛑 Idempotency collision (E11000)`);
+            logger.warn({ traceId, idempotencyKey }, 'Idempotency collision (E11000)');
             try {
                 const existing = await Event.findOne({ idempotencyKey });
                 if (existing) {
@@ -371,7 +373,7 @@ app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
             return res.status(409).json({ error: 'Conflict', message: 'Duplicate idempotency key', traceId });
         }
 
-        console.error(`[Trace: ${traceId}] 💥 Error: ${error.message}`);
+        logger.error({ traceId, err: error.message }, 'Ingestion error');
         res.status(500).json({ error: error.message, traceId });
     }
 });
@@ -410,7 +412,7 @@ app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
             deliverySemantics: eventLog.deliverySemantics
         });
 
-        enqueueJobUpdate({ id: eventLog._id, status: 'Pending (Replay)', data: eventLog.payload });
+        enqueueJobUpdate({ id: eventLog._id, status: 'Pending (Replay)', data: redactPayloadString(eventLog.payload) });
 
         res.json({ message: 'Replay started', id: eventLog._id });
     } catch (error) {
@@ -437,7 +439,7 @@ app.patch('/api/events/:id', validateApiKey, async (req, res) => {
         });
     }
 
-    console.log('🔍 DEBUG PATCH:', { id, mask: updateMask, bodyKeys: Object.keys(validatedBody) });
+    logger.debug({ id, mask: updateMask, bodyKeys: Object.keys(validatedBody) }, 'PATCH request');
 
     try {
         const safeUpdates = applyFieldMask(validatedBody, updateMask);
@@ -455,7 +457,7 @@ app.patch('/api/events/:id', validateApiKey, async (req, res) => {
             });
         }
 
-        console.log(`[Patch] Updating Event ${id} with mask [${updateMask}]`);
+        logger.info({ id, mask: updateMask }, 'Updating event');
 
         const result = await Event.updateOne({ _id: id }, { $set: safeUpdates });
 
@@ -477,25 +479,17 @@ app.patch('/api/events/:id', validateApiKey, async (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => { 
-    console.clear(); 
-    
-    // Big Text Banner
-    console.log(
-        chalk.green(
-            figlet.textSync('Webhook API', { horizontalLayout: 'full' })
-        )
-    );
+    // --- 🎨 STARTUP LOG (structured, not blocking) ---
+    logger.info({
+        port: PORT,
+        security: 'HMAC + API Key',
+        idempotency: 'MongoDB-Backed (unique index)',
+        webSocket: 'Redis-Adapted (multi-replica)',
+        rateLimitRpm: Number(process.env.RATE_LIMIT_RPM) || 1000,
+    }, 'Webhook API server ONLINE');
 
-    // Status Panel
-    console.log(chalk.blue.bold('\n🔹 SYSTEM STATUS DASHBOARD 🔹'));
-    console.log(chalk.gray('-----------------------------------'));
-    console.log(`✅  Server Status:    ${chalk.green('ONLINE')}`);
-    console.log(`🔗  Port:             ${chalk.yellow(PORT)}`);
-    console.log(`🔑  Security:         ${chalk.cyan('HMAC + API Key Active')}`);
-    console.log(`🧠  Idempotency:      ${chalk.magenta('MongoDB-Backed (unique index)')}`);
-    console.log(`🌐  WebSocket:        ${chalk.magenta('Redis-Adapted (multi-replica)')}`);
-    console.log(chalk.gray('-----------------------------------'));
-    console.log(chalk.white('Waiting for incoming events...'));
+    // --- 🧹 START ZOMBIE SWEEPER (Outbox Pattern) ---
+    startSweeper();
 });
 
 // --- 🛑 GRACEFUL SHUTDOWN ---
@@ -503,17 +497,18 @@ let shutdownInProgress = false;
 async function gracefulShutdown(signal) {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
-    console.log(chalk.yellow.bold(`\n🛑 Received ${signal}. Shutting down...`));
+    logger.info({ signal }, 'Graceful shutdown initiated');
     try {
+        stopSweeper();
         server.close();
         await mongoose.connection.close();
         pubClient.disconnect();
         subClient.disconnect();
         await redis.quit();
-        console.log(chalk.green('✅ Shutdown complete. Goodbye!'));
+        logger.info('Shutdown complete');
         process.exit(0);
     } catch (err) {
-        console.error(chalk.red('💥 Shutdown error:'), err);
+        logger.error({ err }, 'Shutdown error');
         process.exit(1);
     }
 }
@@ -527,10 +522,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // trigger a graceful drain, and exit cleanly so the container
 // orchestrator (Docker/K8s) can spin up a healthy replacement.
 process.on('uncaughtException', (err) => {
-    console.error('💥 UNCAUGHT EXCEPTION:', err);
+    logger.fatal({ err }, 'UNCAUGHT EXCEPTION');
     gracefulShutdown('uncaughtException');
 });
 process.on('unhandledRejection', (reason) => {
-    console.error('💥 UNHANDLED REJECTION:', reason);
+    logger.fatal({ err: reason }, 'UNHANDLED REJECTION');
     gracefulShutdown('unhandledRejection');
 });

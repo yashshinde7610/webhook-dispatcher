@@ -17,8 +17,7 @@ if (missing.length > 0) {
 const { Worker } = require('bullmq'); 
 const mongoose = require('mongoose');
 const axios = require('axios');
-const figlet = require('figlet');
-const chalk = require('chalk');
+const logger = require('./utils/logger');
 
 // Infrastructure
 const redis = require('./redis'); // App-level Redis (circuit breaker, DLQ, etc.)
@@ -125,9 +124,15 @@ async function assertNotPrivate(hostname) {
 }
 
 // --- 🔌 CONNECT MONGO ---
-mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db')
-    .then(() => console.log('✅ Worker connected to MongoDB'))
-    .catch(err => console.error('❌ MongoDB Error:', err));
+// 🛡️ BOUNDED CONNECTION POOL: Without an explicit cap, Mongoose defaults to
+// 100 connections.  At 20 horizontal replicas that's 2,000 connections —
+// enough to exhaust most managed MongoDB tiers.  Cap at concurrency + overhead.
+const MONGO_POOL_SIZE = Number(process.env.MONGO_POOL_SIZE) || 55; // 50 concurrency + 5 overhead
+mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db', {
+    maxPoolSize: MONGO_POOL_SIZE,
+})
+    .then(() => logger.info({ poolSize: MONGO_POOL_SIZE }, 'Worker connected to MongoDB'))
+    .catch(err => logger.error({ err }, 'MongoDB connection error'));
 
 // --- 👷 WORKER PROCESSOR ---
 const worker = new Worker('webhook-queue', async (job) => {
@@ -143,7 +148,7 @@ const worker = new Worker('webhook-queue', async (job) => {
 
     // 1. Validate Delivery Semantics
     if (deliverySemantics !== 'AT_LEAST_ONCE_UNORDERED') {
-        console.warn(`[Trace: ${tid}] ⚠️ Warning: Unknown semantics: ${deliverySemantics}`);
+        logger.warn({ traceId: tid, deliverySemantics }, 'Unknown delivery semantics');
     }
 
     // NOTE: PROCESSING write removed (Fix 3 — Write Amplification).
@@ -153,7 +158,7 @@ const worker = new Worker('webhook-queue', async (job) => {
     // cutting per-job MongoDB writes from 3–4 down to 1.
 
     if (process.env.NODE_ENV !== 'production') {
-        console.log(`[Trace: ${tid}] ⚙️  Worker: Picked up Job ${dbId}`);
+        logger.debug({ traceId: tid, dbId }, 'Worker picked up job');
     }
     try {
         // 4. Circuit Breaker Check
@@ -230,8 +235,8 @@ const worker = new Worker('webhook-queue', async (job) => {
         // X-Webhook-Trace-Id header we send above.
         await recordSuccess(url);
         if (process.env.NODE_ENV !== 'production') {
-        console.log(`[Trace: ${tid}] ✅ Success: ${response.status}`);
-    }
+            logger.info({ traceId: tid, status: response.status }, 'Webhook delivered');
+        }
 
         if (dbId) {
             await persistState({
@@ -254,7 +259,7 @@ const worker = new Worker('webhook-queue', async (job) => {
 
         // SSRF attempts are PERMANENT — never retry
         if (error.ssrfBlocked) {
-            console.error(`[Trace: ${tid}] 🛑 SSRF BLOCKED: ${error.message}`);
+            logger.error({ traceId: tid, err: error.message }, 'SSRF BLOCKED');
             if (dbId) {
                 await persistState({
                     dbId,
@@ -277,19 +282,34 @@ const worker = new Worker('webhook-queue', async (job) => {
             await recordFailure(url);
         }
 
-        console.error(`[Trace: ${tid}] ⚠️ Failed: ${type} (${msg})`);
+        logger.warn({ traceId: tid, failureType: type, err: msg }, 'Job failed');
 
         if (dbId) {
+            // 🛡️ FINAL ATTEMPT DETECTION: Handle DEAD transition INSIDE the
+            // processor, not in the fire-and-forget worker.on('failed') listener.
+            // If the process dies between BullMQ registering the 5th failure and
+            // the listener executing, MongoDB would forever say FAILED instead
+            // of DEAD.  Handling it here guarantees the transition is awaited.
+            const maxAttempts = job.opts.attempts || 5;
+            const isFinalAttempt = currentAttempt >= maxAttempts;
+
             await persistState({
                 dbId,
-                status: (type === 'PERMANENT') ? 'FAILED_PERMANENT' : 'FAILED',
-                failureType: (type === 'PERMANENT') ? 'PERMANENT' : 'TRANSIENT',
+                status: isFinalAttempt ? 'DEAD'
+                    : (type === 'PERMANENT') ? 'FAILED_PERMANENT'
+                    : 'FAILED',
+                failureType: (type === 'PERMANENT' || isFinalAttempt) ? 'PERMANENT' : 'TRANSIENT',
                 httpStatus,
                 errorCode,
-                lastError: msg,
+                lastError: isFinalAttempt ? `Max Retries Reached: ${msg}` : msg,
                 incrementAttempt: true,
                 logEntry: { attempt: currentAttempt, status: httpStatus, response: msg }
             });
+
+            if (isFinalAttempt) {
+                logger.error({ traceId: tid, dbId, attempt: currentAttempt }, 'Job DEAD (max retries)');
+                return { status: 'dead', reason: 'Max Retries Reached' };
+            }
         }
 
         if (type === 'PERMANENT') {
@@ -304,10 +324,14 @@ const worker = new Worker('webhook-queue', async (job) => {
     limiter: { max: 50, duration: 1000 }
 });
 
-// --- 💀 DEATH LISTENER ---
+// --- 💀 DEATH LISTENER (Safety Net) ---
+// The DEAD transition is now handled inside the processor catch block above.
+// This listener is a SAFETY NET: if the processor somehow fails to mark DEAD
+// (e.g. a code path we missed), this will catch it.  It's idempotent —
+// setting DEAD on an already-DEAD document is a no-op.
 worker.on('failed', async (job, err) => {
     if (job && job.attemptsMade >= job.opts.attempts) {
-        console.log(chalk.red.bold(`[Trace: ${job.data.traceId}] 💀 Job ${job.id} DIED -> DLQ`));
+        logger.warn({ traceId: job.data.traceId, jobId: job.id }, 'Death listener safety net fired');
         if (job.data.dbId) {
             await Event.findByIdAndUpdate(job.data.dbId, {
                 status: 'DEAD',
@@ -319,37 +343,29 @@ worker.on('failed', async (job, err) => {
 });
 
 // --- 🎨 STARTUP LOGS ---
-console.clear();
-console.log(chalk.magenta(figlet.textSync('Worker Node')));
-console.log(chalk.yellow.bold('\n🔸 BACKGROUND WORKER ACTIVE 🔸'));
-// ... (rest of your logs)
+logger.info({ concurrency: 50, limiter: '50/s' }, 'Background worker active');
 
 // --- 🛑 GRACEFUL SHUTDOWN ---
 let shutdownInProgress = false;
 async function gracefulShutdown(signal) {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
-    console.log(chalk.yellow.bold(`\n🛑 Received ${signal}. Starting graceful shutdown...`));
+    logger.info({ signal }, 'Graceful shutdown initiated');
     
     try {
-        // 1. Stop accepting new jobs from Redis immediately.
-        //    worker.close() waits for in-flight jobs to finish, so all
-        //    awaited persistState() calls complete before we proceed.
-        console.log(chalk.gray('1. Closing BullMQ Worker (draining in-flight jobs)...'));
+        logger.info('Closing BullMQ Worker (draining in-flight jobs)...');
         await worker.close(); 
         
-        // 2. Disconnect MongoDB (no in-memory buffer to flush anymore)
-        console.log(chalk.gray('2. Closing MongoDB Connection...'));
+        logger.info('Closing MongoDB Connection...');
         await mongoose.connection.close();
 
-        // 3. Close the app-level Redis connection last
-        console.log(chalk.gray('3. Closing Redis Connection...'));
+        logger.info('Closing Redis Connection...');
         await redis.quit();
         
-        console.log(chalk.green('✅ Shutdown complete. Goodbye!'));
+        logger.info('Shutdown complete');
         process.exit(0);
     } catch (err) {
-        console.error(chalk.red('💥 Error during shutdown:'), err);
+        logger.error({ err }, 'Error during shutdown');
         process.exit(1);
     }
 }
@@ -364,10 +380,10 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 // trigger a graceful drain, and exit cleanly so the container
 // orchestrator (Docker/K8s) can spin up a healthy replacement.
 process.on('uncaughtException', (err) => {
-    console.error('💥 UNCAUGHT EXCEPTION:', err);
+    logger.fatal({ err }, 'UNCAUGHT EXCEPTION');
     gracefulShutdown('uncaughtException');
 });
 process.on('unhandledRejection', (reason) => {
-    console.error('💥 UNHANDLED REJECTION:', reason);
+    logger.fatal({ err: reason }, 'UNHANDLED REJECTION');
     gracefulShutdown('unhandledRejection');
 });
