@@ -200,30 +200,45 @@ const worker = new Worker('webhook-queue', async (job) => {
             cb(null, validatedIP, net.isIPv4(validatedIP) ? 4 : 6);
         };
 
-        const response = await axios.post(url, payloadString, {
-            headers: { 
-                'X-Signature': signature,
-                // 🛡️ TRACE HEADER: Receivers can use this to deduplicate
-                // deliveries.  AT_LEAST_ONCE semantics mean we may deliver
-                // twice if MongoDB drops between Axios success and persistState.
-                'X-Webhook-Trace-Id': tid,
-                'Content-Type': 'application/json' 
-            },
-            // 🛡️ PREVENT RE-SERIALIZATION: payloadString is already valid JSON.
-            // Without this, Axios calls JSON.stringify() on the string, wrapping
-            // it in extra quotes and breaking the receiver's HMAC verification.
-            transformRequest: [data => data],
-            timeout: 5000,
+        // 🛡️ ABSOLUTE WALL-CLOCK TIMEOUT (AbortController)
+        // Axios' `timeout` only measures idle time between data chunks.
+        // A "tarpit" server that trickles 1 byte/min keeps the socket
+        // alive indefinitely.  AbortController enforces a strict 5-second
+        // ceiling over the ENTIRE request lifecycle: DNS → TCP → TLS →
+        // headers → body — regardless of how many bytes arrive.
+        const controller = new AbortController();
+        const abortTimer = setTimeout(() => controller.abort(), 5000);
 
-            // 🛡️ DNS-PINNED AGENTS: Axios will use our pre-validated IP
-            httpAgent:  new http.Agent({ lookup: pinnedLookup }),
-            httpsAgent: new https.Agent({ lookup: pinnedLookup }),
+        let response;
+        try {
+            response = await axios.post(url, payloadString, {
+                headers: { 
+                    'X-Signature': signature,
+                    // 🛡️ TRACE HEADER: Receivers can use this to deduplicate
+                    // deliveries.  AT_LEAST_ONCE semantics mean we may deliver
+                    // twice if MongoDB drops between Axios success and persistState.
+                    'X-Webhook-Trace-Id': tid,
+                    'Content-Type': 'application/json' 
+                },
+                // 🛡️ PREVENT RE-SERIALIZATION: payloadString is already valid JSON.
+                // Without this, Axios calls JSON.stringify() on the string, wrapping
+                // it in extra quotes and breaking the receiver's HMAC verification.
+                transformRequest: [data => data],
+                timeout: 5000,
+                signal: controller.signal, // Strict wall-clock abort
 
-            // 🛡️ OOM PROTECTION
-            maxContentLength:  1 * 1024 * 1024,
-            maxBodyLength:     1 * 1024 * 1024,
-            maxRedirects:      0,
-        });
+                // 🛡️ DNS-PINNED AGENTS: Axios will use our pre-validated IP
+                httpAgent:  new http.Agent({ lookup: pinnedLookup }),
+                httpsAgent: new https.Agent({ lookup: pinnedLookup }),
+
+                // 🛡️ OOM PROTECTION
+                maxContentLength:  1 * 1024 * 1024,
+                maxBodyLength:     1 * 1024 * 1024,
+                maxRedirects:      0,
+            });
+        } finally {
+            clearTimeout(abortTimer); // Prevent timer leak on success/early failure
+        }
 
         // 7. Handle Success
         //
@@ -347,12 +362,25 @@ worker.on('failed', async (job, err) => {
 logger.info({ concurrency: 50, limiter: '50/s' }, 'Background worker active');
 
 // --- 🛑 GRACEFUL SHUTDOWN ---
+// BullMQ's worker.close() waits for ALL in-flight jobs to finish.
+// If a malicious "tarpit" server trickles 1 byte/min, worker.close()
+// blocks indefinitely and Docker/K8s eventually SIGKILLs us.
+// The 15-second safety net mirrors the one in server.js.
+const SHUTDOWN_TIMEOUT_MS = 15_000;
+
 let shutdownInProgress = false;
 async function gracefulShutdown(signal) {
     if (shutdownInProgress) return;
     shutdownInProgress = true;
     logger.info({ signal }, 'Graceful shutdown initiated');
-    
+
+    // 🛡️ TARPIT PROTECTION: Force-exit if draining takes too long.
+    const forceTimer = setTimeout(() => {
+        logger.error('Forced shutdown after drain timeout (15 s)');
+        process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceTimer.unref(); // Don't keep the event loop alive just for this
+
     try {
         logger.info('Closing BullMQ Worker (draining in-flight jobs)...');
         await worker.close(); 

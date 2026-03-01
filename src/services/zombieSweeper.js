@@ -15,10 +15,18 @@
 //   This is the "Outbox Pattern" — MongoDB is the source of truth, and
 //   the sweeper ensures eventual delivery.
 //
+const os = require('os');
+const crypto = require('crypto');
 const Event = require('../models/Event');
 const { addToQueue } = require('../queue');
 const logger = require('../utils/logger');
 const redis = require('../redis');
+
+// 🛡️ LOCK IDENTITY: In Docker every container runs as PID 1, so
+// process.pid is useless for debugging which replica holds the lock.
+// hostname (= container ID in Docker/K8s) + a short random suffix
+// guarantees a globally unique, human-debuggable lock value.
+const LOCK_OWNER = `${os.hostname()}-${crypto.randomBytes(4).toString('hex')}`;
 
 const ZOMBIE_THRESHOLD_MS = Number(process.env.ZOMBIE_THRESHOLD_MS) || 5 * 60 * 1000; // 5 minutes
 const SWEEP_INTERVAL_MS   = Number(process.env.SWEEP_INTERVAL_MS)  || 60 * 1000;      // Every 1 minute
@@ -37,7 +45,7 @@ async function sweepZombies() {
     // 🛡️ DISTRIBUTED LOCK: Only one replica should sweep at a time.
     // SET NX ("set if not exists") with a TTL ensures the lock auto-releases
     // if the holder crashes, and prevents split-brain redundant sweeps.
-    const lock = await redis.set(LOCK_KEY, process.pid.toString(), 'EX', LOCK_TTL_S, 'NX');
+    const lock = await redis.set(LOCK_KEY, LOCK_OWNER, 'EX', LOCK_TTL_S, 'NX');
     if (!lock) {
         logger.debug('Another instance is currently sweeping — skipping');
         return;
