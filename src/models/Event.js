@@ -73,7 +73,17 @@ const EventSchema = new mongoose.Schema({
     timestamps: true // Automatically manages createdAt and updatedAt
 });
 
+// --- 🛡️ TTL INDEX (Auto-Purge) ---
+// MongoDB automatically deletes documents 30 days after `createdAt`.
+// This prevents unbounded collection growth at scale and also solves the
+// "forever-blocked idempotency key" problem: after 30 days the document
+// (and its unique idempotencyKey) is cleaned up, freeing the key for reuse.
+// 30 days = 2,592,000 seconds.  Adjust via Event.TTL_SECONDS if needed.
+const TTL_SECONDS = Number(process.env.EVENT_TTL_SECONDS) || 30 * 24 * 60 * 60;
+EventSchema.index({ createdAt: 1 }, { expireAfterSeconds: TTL_SECONDS });
+
 // Export the cap so the write layer can reference the same constant.
 EventSchema.statics.MAX_LOGS = 20;
+EventSchema.statics.TTL_SECONDS = TTL_SECONDS;
 
 module.exports = mongoose.model('Event', EventSchema);

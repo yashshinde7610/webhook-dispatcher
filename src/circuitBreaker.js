@@ -15,16 +15,60 @@ function extractHost(url) {
 const FAILURE_THRESHOLD = 5;   // 5 failures...
 const FAILURE_WINDOW = 60;     // ...in 1 minute...
 const BREAK_DURATION = 30;     // ...trips the breaker for 30 seconds.
-// (I lowered duration to 30s so you can test it faster!)
+
+// --- 🛡️ HALF-OPEN STATE MACHINE ---
+//
+// PROBLEM (old approach):
+//   Setting the counter to THRESHOLD-1 when the breaker trips means ALL 50
+//   concurrent workers will bypass the check simultaneously after the break
+//   expires, bombarding the recovering server with up to 50 requests.
+//
+// THE FIX:
+//   Use three Redis keys per host:
+//     circuit_status:{host}  — "OPEN" during break  (TTL = BREAK_DURATION)
+//     circuit_fails:{host}   — failure counter       (TTL = FAILURE_WINDOW)
+//     circuit_probe:{host}   — half-open probe lock  (TTL = 10s, SET NX)
+//
+//   When the break expires (circuit_status key gone), `getCircuitStatus`
+//   checks the failure counter.  If it is still >= THRESHOLD-1, the circuit
+//   enters HALF_OPEN.  In HALF_OPEN, a single probe request is allowed
+//   through by acquiring `circuit_probe:{host}` with NX.  All other workers
+//   fast-fail.  If the probe succeeds → CLOSED.  If it fails → re-OPEN.
 
 /**
- * Check if the circuit is OPEN (Blocked)
+ * Check the circuit state for a URL.
+ * Returns: 'OPEN' | 'HALF_OPEN_BLOCKED' | 'HALF_OPEN_PROBE' | 'CLOSED'
+ *
+ * Worker behaviour:
+ *   OPEN              → throw immediately
+ *   HALF_OPEN_BLOCKED → throw immediately (a probe is already in flight)
+ *   HALF_OPEN_PROBE   → this worker won the probe lock; send the request
+ *   CLOSED            → send the request normally
  */
 async function getCircuitStatus(url) {
     const host = extractHost(url);
-    const key = `circuit_status:${host}`;
-    const status = await redis.get(key);
-    return status === 'OPEN' ? 'OPEN' : 'CLOSED';
+    const statusKey = `circuit_status:${host}`;
+    const countKey  = `circuit_fails:${host}`;
+    const probeKey  = `circuit_probe:${host}`;
+
+    // 1. If the breaker is explicitly OPEN, fast-fail.
+    const status = await redis.get(statusKey);
+    if (status === 'OPEN') return 'OPEN';
+
+    // 2. Breaker not OPEN — check if we're in the half-open window.
+    //    If the failure count is still at threshold-1 (set when we tripped),
+    //    only one probe request should go through.
+    const count = await redis.get(countKey);
+    if (count !== null && Number(count) >= FAILURE_THRESHOLD - 1) {
+        // Try to acquire the probe lock (NX = only if it doesn't exist)
+        const acquired = await redis.set(probeKey, '1', 'EX', 10, 'NX');
+        if (acquired) {
+            return 'HALF_OPEN_PROBE';  // This worker sends the probe
+        }
+        return 'HALF_OPEN_BLOCKED';    // Another probe is already in flight
+    }
+
+    return 'CLOSED';
 }
 
 /**
@@ -32,14 +76,13 @@ async function getCircuitStatus(url) {
  */
 async function recordFailure(url) {
     const host = extractHost(url);
-    const countKey = `circuit_fails:${host}`;
+    const countKey  = `circuit_fails:${host}`;
     const statusKey = `circuit_status:${host}`;
 
     // 1. Increment failure count
     const count = await redis.incr(countKey);
 
-    // 2. If this is the first failure, extend the window to outlast the break
-    // duration so we remember this endpoint was failing recently.
+    // 2. If this is the first failure, set the window TTL
     if (count === 1) {
         await redis.expire(countKey, FAILURE_WINDOW + BREAK_DURATION);
     }
@@ -49,23 +92,21 @@ async function recordFailure(url) {
         console.warn(`🛡️  [CIRCUIT BREAKER] Tripped for: ${url}`);
         // Set "OPEN" state for the cooldown duration
         await redis.set(statusKey, 'OPEN', 'EX', BREAK_DURATION);
-        // 🛡️ HALF-OPEN FIX: Set counter to threshold-1 instead of deleting.
-        // When the breaker expires, the very NEXT failure will instantly
-        // trip it again (proper half-open behavior) instead of allowing
-        // 5 more requests to bombard the downed server.
-        await redis.set(countKey, FAILURE_THRESHOLD - 1);
-        await redis.expire(countKey, FAILURE_WINDOW);
+        // Set counter to threshold-1 so the half-open logic kicks in
+        // once the OPEN key expires.
+        await redis.set(countKey, String(FAILURE_THRESHOLD - 1));
+        await redis.expire(countKey, FAILURE_WINDOW + BREAK_DURATION);
     }
 }
 
 /**
- * Success resets the failure count (Half-Open -> Closed)
+ * Record a success.  Clears the failure counter AND the probe lock,
+ * fully closing the circuit (HALF_OPEN → CLOSED transition).
  */
 async function recordSuccess(url) {
     const host = extractHost(url);
     await redis.del(`circuit_fails:${host}`);
-    // Note: We don't delete 'circuit_status' immediately if it was Half-Open;
-    // we just let it expire or manually clear it. For simplicity, we clear fails.
+    await redis.del(`circuit_probe:${host}`);
 }
 
 module.exports = { getCircuitStatus, recordFailure, recordSuccess };

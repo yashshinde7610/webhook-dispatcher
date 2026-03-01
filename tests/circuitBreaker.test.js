@@ -10,7 +10,7 @@ const mockRedis = {
     _data: {},
     _calls: [],
 
-    async get(key) { return this._data[key] || null; },
+    async get(key) { return this._data[key] !== undefined ? this._data[key] : null; },
     
     async incr(key) {
         const val = (this._data[key] || 0) + 1;
@@ -20,9 +20,16 @@ const mockRedis = {
     
     async expire(key, ttl) { return true; },
     
-    async set(key, val, opt, ttl) { 
+    async set(key, val, ...rest) { 
+        // Handle both set(key, val, 'EX', ttl) and set(key, val, 'EX', ttl, 'NX')
+        const hasNX = rest.includes('NX');
+        if (hasNX && this._data[key] !== undefined) {
+            // NX: only set if NOT exists — return null if key already exists
+            this._calls.push({ method: 'set', args: [key, val, ...rest], result: null });
+            return null;
+        }
         this._data[key] = val;
-        this._calls.push({ method: 'set', args: [key, val, opt, ttl] });
+        this._calls.push({ method: 'set', args: [key, val, ...rest], result: 'OK' });
         return 'OK';
     },
     
@@ -66,11 +73,14 @@ describe('Circuit Breaker Logic', () => {
         assert.strictEqual(status, 'OPEN', 'Circuit should be OPEN after 5 failures');
 
         // 3. Verify the underlying Redis 'set' call arguments
-        // We expect: set(key, 'OPEN', 'EX', 30)
+        // We expect a set call with 'OPEN' and TTL 30
         const setCall = mockRedis._calls.find(c => c.method === 'set' && c.args[1] === 'OPEN');
         
         assert.ok(setCall, 'redis.set should have been called with OPEN');
-        assert.strictEqual(setCall.args[3], 30, 'Break duration should be 30 seconds');
+        // TTL is 30 seconds — find it in the args (after 'EX')
+        const exIdx = setCall.args.indexOf('EX');
+        assert.ok(exIdx !== -1, 'set call should include EX option');
+        assert.strictEqual(setCall.args[exIdx + 1], 30, 'Break duration should be 30 seconds');
         
         console.log('   ✅ Circuit correctly tripped after 5 failures.');
     });

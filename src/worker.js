@@ -151,9 +151,13 @@ const worker = new Worker('webhook-queue', async (job) => {
     }
     try {
         // 4. Circuit Breaker Check
-        if (await getCircuitStatus(url) === 'OPEN') {
+        const circuitState = await getCircuitStatus(url);
+        if (circuitState === 'OPEN' || circuitState === 'HALF_OPEN_BLOCKED') {
             throw new Error('Circuit Breaker Open');
         }
+        // circuitState === 'HALF_OPEN_PROBE' → this worker won the probe lock;
+        // it will send the request normally.  On success, recordSuccess() closes
+        // the circuit.  On failure, recordFailure() will re-trip it.
 
         // 5. SSRF Guard: Resolve hostname via DNS, then check the resolved IP.
         //    Defeats nip.io aliases, octal/hex encoding, DNS rebinding, etc.

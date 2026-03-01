@@ -110,53 +110,72 @@ async function run() {
   console.log(`Connecting to ${MONGO_URI} ...`);
   await mongoose.connect(MONGO_URI, {});
 
-  const cursor = Event.find().cursor();
+  // --- 🛡️ PAGINATED _id-RANGE SCAN ---
+  // Instead of Event.find().cursor() which attempts to load the entire
+  // collection and locks the DB, we paginate by _id in ascending order.
+  // Each page fetches at most PAGE_SIZE documents, keeping RAM bounded
+  // and allowing other operations to interleave between pages.
+  const PAGE_SIZE = 500;
+  let lastId = null;
   let ops = [];
   let processed = 0;
   let toUpdate = 0;
   let examples = [];
   let batchCount = 0;
 
-  for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
-    processed++;
-    const patch = buildSanitizedPatch(doc);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const filter = lastId ? { _id: { $gt: lastId } } : {};
+    const page = await Event.find(filter)
+      .sort({ _id: 1 })
+      .limit(PAGE_SIZE)
+      .lean();
 
-    if (patch) {
-      toUpdate++;
-      const op = {
-        updateOne: {
-          filter: { _id: doc._id },
-          update: { $set: patch }
-        }
-      };
-      ops.push(op);
+    if (page.length === 0) break;  // No more documents
 
-      if (examples.length < 5) {
-        examples.push({
-          _id: doc._id.toString(),
-          before: {
-            finalHttpStatus: doc.finalHttpStatus,
-            failureType: doc.failureType,
-            attemptCount: doc.attemptCount,
-            errorCode: doc.errorCode,
-            lastError: doc.lastError,
-            logsSample: Array.isArray(doc.logs) ? doc.logs.slice(0,1) : doc.logs
-          },
-          after: patch
+    for (const doc of page) {
+      processed++;
+      lastId = doc._id;  // advance the cursor
+      const patch = buildSanitizedPatch(doc);
+
+      if (patch) {
+        toUpdate++;
+        ops.push({
+          updateOne: {
+            filter: { _id: doc._id },
+            update: { $set: patch }
+          }
         });
+
+        if (examples.length < 5) {
+          examples.push({
+            _id: doc._id.toString(),
+            before: {
+              finalHttpStatus: doc.finalHttpStatus,
+              failureType: doc.failureType,
+              attemptCount: doc.attemptCount,
+              errorCode: doc.errorCode,
+              lastError: doc.lastError,
+              logsSample: Array.isArray(doc.logs) ? doc.logs.slice(0, 1) : doc.logs
+            },
+            after: patch
+          });
+        }
+      }
+
+      if (ops.length >= BATCH_OPS) {
+        batchCount++;
+        if (APPLY) {
+          await Event.bulkWrite(ops, { ordered: false });
+          console.log(`Applied batch #${batchCount} (${ops.length} ops)`);
+        } else {
+          console.log(`Prepared batch #${batchCount} (${ops.length} ops) [dry-run]`);
+        }
+        ops = [];
       }
     }
 
-    if (ops.length >= BATCH_OPS) {
-      batchCount++;
-      if (APPLY) {
-        await Event.bulkWrite(ops, { ordered: false });
-        console.log(`Applied batch #${batchCount} (${ops.length} ops)`);
-      } else {
-        console.log(`Prepared batch #${batchCount} (${ops.length} ops) [dry-run]`);
-      }
-      ops = [];
-    }
+    console.log(`  scanned ${processed} documents so far...`);
   }
 
   // final flush

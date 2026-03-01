@@ -28,13 +28,39 @@ const { QueueEvents } = require('bullmq');
 const { applyFieldMask } = require('./src/utils/fieldMask'); 
 const Joi = require('joi');
 
-// --- 🛡️ INPUT VALIDATION SCHEMA ---
+// --- 🛡️ CONSTANT-TIME STRING COMPARISON ---
+// V8's === exits early on the first mismatched character, leaking key length
+// via timing side-channels.  crypto.timingSafeEqual always compares the full
+// buffers in constant time, defeating character-by-character guessing attacks.
+const safeCompare = (a, b) => {
+    const bufA = Buffer.from(String(a || ''));
+    const bufB = Buffer.from(String(b || ''));
+    if (bufA.length !== bufB.length) {
+        // Compare against itself so timing is still constant, but return false
+        crypto.timingSafeEqual(bufA, bufA);
+        return false;
+    }
+    return crypto.timingSafeEqual(bufA, bufB);
+};
+
+// --- 🛡️ INPUT VALIDATION SCHEMAS ---
 const eventSchema = Joi.object({
     url: Joi.string().uri({ scheme: ['http', 'https'] }).required()
         .messages({ 'string.uri': 'url must be a valid HTTP/HTTPS URL' }),
     payload: Joi.object().required()
         .messages({ 'any.required': 'payload is required and must be a JSON object' })
 }).options({ allowUnknown: true }); // Allow extra fields to pass through
+
+// PATCH validation: only allow known, safe field types through the mask.
+// This blocks NoSQL injection ($set, $gt, etc.) and wrong types before
+// they reach MongoDB.
+const patchSchema = Joi.object({
+    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'FAILED_PERMANENT', 'DEAD'),
+    url: Joi.string().uri({ scheme: ['http', 'https'] }),
+    payload: Joi.object(),
+    failureType: Joi.string().valid('TRANSIENT', 'PERMANENT').allow(null),
+    lastError: Joi.string().allow(null, ''),
+}).options({ stripUnknown: true }); // Silently drop any unrecognised keys
 
 const app = express();
 const server = http.createServer(app); 
@@ -58,7 +84,7 @@ io.adapter(createAdapter(pubClient, subClient));
 // The backend API_KEY is NEVER exposed to the browser.
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
-    if (token === process.env.DASHBOARD_TOKEN) {
+    if (safeCompare(token, process.env.DASHBOARD_TOKEN)) {
         return next();
     }
     return next(new Error('Authentication error: Invalid Dashboard Token'));
@@ -66,6 +92,24 @@ io.use((socket, next) => {
 
 app.use(express.json());
 app.use(express.static('public')); 
+
+// --- 📡 WEBSOCKET BATCHING ---
+// At 5,000 webhooks/sec, emitting one WS message per job-update would choke
+// the Node.js event loop and freeze every connected browser.  Instead, we
+// buffer updates and flush them as a single array every WS_BATCH_INTERVAL_MS.
+const WS_BATCH_INTERVAL_MS = Number(process.env.WS_BATCH_INTERVAL_MS) || 500;
+let jobUpdateBuffer = [];
+
+function enqueueJobUpdate(update) {
+    jobUpdateBuffer.push(update);
+}
+
+setInterval(() => {
+    if (jobUpdateBuffer.length === 0) return;
+    const batch = jobUpdateBuffer;
+    jobUpdateBuffer = [];
+    io.emit('job-update-batch', batch);
+}, WS_BATCH_INTERVAL_MS);
 
 // --- 🎧 QUEUE LISTENER ---
 const queueEvents = new QueueEvents('webhook-queue', {
@@ -92,7 +136,7 @@ queueEvents.on('completed', ({ jobId, returnvalue }) => {
 
     console.log(`⚡ Event: Job ${realId} completed!`);
     
-    io.emit('job-update', { 
+    enqueueJobUpdate({ 
         id: realId, 
         status: result.status || 'Completed', 
         timestamp: new Date(),
@@ -108,13 +152,13 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
     } catch (e) { console.error("⚠️ Could not fetch failed job details"); }
 
     console.log(`⚡ Event: Job ${realId} failed!`);
-    io.emit('job-update', { id: realId, status: 'Failed', reason: failedReason });
+    enqueueJobUpdate({ id: realId, status: 'Failed', reason: failedReason });
 });
 
 // --- 🛡️ MIDDLEWARE ---
 const validateApiKey = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
-    if (apiKey !== process.env.API_KEY) {
+    if (!safeCompare(apiKey, process.env.API_KEY)) {
         return res.status(403).json({ error: '⛔ Access Denied: Invalid API Key' });
     }
     next();
@@ -222,7 +266,7 @@ app.post('/api/events', validateApiKey, async (req, res) => {
                 deliverySemantics: existing.deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
             });
 
-            io.emit('job-update', { id: existing._id, status: 'Pending (Force Retry)', data: existing.payload, traceId });
+            enqueueJobUpdate({ id: existing._id, status: 'Pending (Force Retry)', data: existing.payload, traceId });
             return res.status(202).json({
                 status: 'accepted',
                 message: 'Force retry queued',
@@ -263,7 +307,7 @@ app.post('/api/events', validateApiKey, async (req, res) => {
         }); 
 
         // Emit real-time update
-        io.emit('job-update', { id: generatedDbId, status: 'Pending', data: jobData, traceId });
+        enqueueJobUpdate({ id: generatedDbId, status: 'Pending', data: jobData, traceId });
         
         // Respond to client immediately
         res.status(202).json({ 
@@ -331,7 +375,7 @@ app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
             deliverySemantics: eventLog.deliverySemantics
         });
 
-        io.emit('job-update', { id: eventLog._id, status: 'Pending (Replay)', data: eventLog.payload });
+        enqueueJobUpdate({ id: eventLog._id, status: 'Pending (Replay)', data: eventLog.payload });
 
         res.json({ message: 'Replay started', id: eventLog._id });
     } catch (error) {
@@ -339,23 +383,35 @@ app.post('/api/events/:id/replay', validateApiKey, async (req, res) => {
     }
 });
 
-// --- 🛠️ PATCH ROUTE (With Field Mask) ---
+// --- 🛠️ PATCH ROUTE (With Field Mask + Joi Validation) ---
 app.patch('/api/events/:id', validateApiKey, async (req, res) => {
     const { id } = req.params;
     // Look in URL first, fallback to Header if URL fails
-const updateMask = req.query.updateMask || req.headers['x-update-mask'];
+    const updateMask = req.query.updateMask || req.headers['x-update-mask'];
     const updateData = req.body;
 
-    console.log('🔍 DEBUG PATCH:', { id, mask: updateMask, bodyKeys: Object.keys(updateData) });
+    // 🛡️ SCHEMA VALIDATION: Blocks NoSQL operators ($set, $gt, etc.) and
+    // invalid types before they ever reach MongoDB.  `stripUnknown: true`
+    // silently drops any field not in the patchSchema allowlist.
+    const { error: patchValidationError, value: validatedBody } = patchSchema.validate(updateData);
+    if (patchValidationError) {
+        return res.status(400).json({
+            error: 'Bad Request',
+            message: patchValidationError.details[0].message,
+            code: 'PATCH_VALIDATION_FAILED'
+        });
+    }
+
+    console.log('🔍 DEBUG PATCH:', { id, mask: updateMask, bodyKeys: Object.keys(validatedBody) });
 
     try {
-        const safeUpdates = applyFieldMask(updateData, updateMask);
+        const safeUpdates = applyFieldMask(validatedBody, updateMask);
 
         if (Object.keys(safeUpdates).length === 0) {
             return res.status(400).json({ 
                 error: 'No valid fields to update. Did you provide an updateMask?',
                 receivedMask: updateMask,
-                receivedBody: updateData
+                receivedBody: validatedBody
             });
         }
 
@@ -365,7 +421,7 @@ const updateMask = req.query.updateMask || req.headers['x-update-mask'];
 
         if (result.matchedCount === 0) return res.status(404).json({ error: 'Event not found' });
 
-        io.emit('job-update', { 
+        enqueueJobUpdate({ 
             id: id, 
             status: safeUpdates.status || 'Updated', 
             response: `Patched fields: ${Object.keys(safeUpdates).join(', ')}` 
