@@ -1,6 +1,5 @@
 // src/utils/workerUtils.js
 const crypto = require('crypto');
-const stringify = require('json-stable-stringify');
 
 
 /**
@@ -15,14 +14,27 @@ function safeHttpStatus(val) {
     }
     return null;
 }
-/*
- * Creates an HMAC signature for the webhook payload.
+
+/**
+ * Creates an HMAC-SHA256 signature for the webhook payload.
+ *
+ * ARCHITECTURE: Accepts a raw JSON **string**, NOT a parsed object.
+ * The payload is stored as a string in MongoDB and flows through BullMQ
+ * as a string.  The worker signs this exact string and sends it on the
+ * wire via Axios (with transformRequest identity to prevent re-serialization).
+ * This guarantees:  HMAC(stored) === HMAC(sent) === HMAC(received)
+ *
+ * The old approach (json-stable-stringify on a parsed object) broke strict
+ * webhook receivers (Stripe, GitHub, Slack) because it re-formatted the
+ * payload, producing a hash that never matched the raw bytes on the wire.
  */
-function createHmacSignature(payload, secret) {
+function createHmacSignature(payloadString, secret) {
     if (!secret) throw new Error('❌ WEBHOOK_SECRET is missing in .env file');
-    // 🛡️ FIX: Use deterministic key-sorted stringify so HMAC is stable
-    // regardless of object key insertion order (V8 does not guarantee order).
-    return crypto.createHmac('sha256', secret).update(stringify(payload)).digest('hex');
+    if (typeof payloadString !== 'string') {
+        // Backward compat: if an old-format Object sneaks through, stringify it
+        payloadString = JSON.stringify(payloadString);
+    }
+    return crypto.createHmac('sha256', secret).update(payloadString).digest('hex');
 }
 
 /**

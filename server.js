@@ -90,8 +90,35 @@ io.use((socket, next) => {
     return next(new Error('Authentication error: Invalid Dashboard Token'));
 });
 
-app.use(express.json());
-app.use(express.static('public')); 
+// --- 🛡️ RAW BODY CAPTURE + PAYLOAD SIZE LIMIT ---
+// 1. `verify` saves the exact bytes before parsing, giving us an authentic
+//    reference for HMAC signature generation.  Webhook receivers hash the
+//    raw bytes they receive; if we re-serialize, the hash will never match.
+// 2. `limit` prevents a single request from OOM-killing the process.
+//    Without it, a 500 MB JSON body would be buffered into memory.
+app.use(express.json({
+    limit: '1mb',
+    verify: (req, _res, buf) => {
+        req.rawBody = buf; // Save exact raw bytes (Buffer)
+    }
+}));
+app.use(express.static('public'));
+
+// --- 🛡️ INGRESS RATE LIMITING (Redis-Backed) ---
+// Without this, 100k req/s exhausts Node memory or the MongoDB connection pool.
+// Redis-backed store shares counters across all API replicas.
+const rateLimit = require('express-rate-limit');
+const { RedisStore } = require('rate-limit-redis');
+const ingestLimiter = rateLimit({
+    windowMs: 60 * 1000,           // 1 minute
+    max: Number(process.env.RATE_LIMIT_RPM) || 1000, // 1000 req/min/IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: new RedisStore({
+        sendCommand: (...args) => redis.call(...args),
+    }),
+    message: { error: 'Too Many Requests', code: 'RATE_LIMITED' },
+});
 
 // --- 📡 WEBSOCKET BATCHING ---
 // At 5,000 webhooks/sec, emitting one WS message per job-update would choke
@@ -185,7 +212,7 @@ setInterval(async () => {
 // Idempotency is enforced via a unique sparse MongoDB index on
 // `idempotencyKey` — no Redis RAM pressure, survives restarts,
 // and keys live as long as the event (days/months), not 5 minutes.
-app.post('/api/events', validateApiKey, async (req, res) => {
+app.post('/api/events', ingestLimiter, validateApiKey, async (req, res) => {
     const traceId = crypto.randomUUID(); 
 
     if (redis.status !== 'ready') {
@@ -216,6 +243,13 @@ app.post('/api/events', validateApiKey, async (req, res) => {
     const forceRetry = req.headers['x-force-retry'] === 'true';
     const jobData = req.body;
 
+    // 🛡️ SERIALIZE ONCE AT THE BOUNDARY
+    // The payload is validated as a JSON object by Joi above, then
+    // stringified here.  This single string is stored in MongoDB, signed
+    // by the worker's HMAC, and sent on the wire — guaranteeing that
+    // HMAC(stored) === HMAC(sent) === HMAC(received).
+    const payloadString = JSON.stringify(jobData.payload);
+
     try {
         // --- FORCE RETRY PATH ---
         // Atomically claim the retry via findOneAndUpdate with a status guard.
@@ -227,7 +261,7 @@ app.post('/api/events', validateApiKey, async (req, res) => {
                     $set: {
                         status: 'PENDING',
                         url: jobData.url || undefined,
-                        payload: jobData.payload || undefined,
+                        payload: jobData.payload ? JSON.stringify(jobData.payload) : undefined,
                     },
                     $push: {
                         logs: {
@@ -285,7 +319,7 @@ app.post('/api/events', validateApiKey, async (req, res) => {
             _id: generatedDbId,
             traceId,
             source: 'API_KEY_USER',
-            payload: jobData.payload,
+            payload: payloadString,
             url: jobData.url,
             ...(idempotencyKey ? { idempotencyKey } : {}),
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
@@ -299,7 +333,8 @@ app.post('/api/events', validateApiKey, async (req, res) => {
 
         // Push to BullMQ
         await addToQueue({ 
-            ...jobData, 
+            url: jobData.url,
+            payload: payloadString,
             dbId: generatedDbId, 
             traceId,
             source: 'API_KEY_USER', 
@@ -406,6 +441,11 @@ app.patch('/api/events/:id', validateApiKey, async (req, res) => {
 
     try {
         const safeUpdates = applyFieldMask(validatedBody, updateMask);
+
+        // Stringify payload if present (stored as JSON string in MongoDB)
+        if (safeUpdates.payload && typeof safeUpdates.payload === 'object') {
+            safeUpdates.payload = JSON.stringify(safeUpdates.payload);
+        }
 
         if (Object.keys(safeUpdates).length === 0) {
             return res.status(400).json({ 

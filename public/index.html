@@ -79,7 +79,18 @@
 
         // 🛡️ DASHBOARD AUTH: Uses a separate read-only DASHBOARD_TOKEN.
         // The backend API_KEY is NEVER shipped to the browser.
-        const dashboardToken = new URLSearchParams(window.location.search).get('token')
+        //
+        // SECURITY: If the token arrives via URL query param (?token=xyz),
+        // strip it immediately via history.replaceState to prevent it from
+        // persisting in browser history, proxy logs, and Referer headers.
+        const tokenFromUrl = new URLSearchParams(window.location.search).get('token');
+        if (tokenFromUrl) {
+            localStorage.setItem('dashboardToken', tokenFromUrl);
+            const cleanUrl = new URL(window.location);
+            cleanUrl.searchParams.delete('token');
+            window.history.replaceState({}, '', cleanUrl.toString());
+        }
+        const dashboardToken = tokenFromUrl
             || localStorage.getItem('dashboardToken')
             || prompt('Enter Dashboard Token:');
         if (dashboardToken) localStorage.setItem('dashboardToken', dashboardToken);

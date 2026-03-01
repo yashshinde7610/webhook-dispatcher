@@ -35,6 +35,31 @@ const mockRedis = {
     
     async del(key) { delete this._data[key]; },
 
+    // 🛡️ DEFINE COMMAND MOCK: circuitBreaker.js calls redis.defineCommand()
+    // at module load to register the Lua tripCircuit script.  Since we can't
+    // execute Lua in Node, we implement the equivalent JS logic instead.
+    defineCommand(name, _config) {
+        if (name === 'tripCircuit') {
+            this.tripCircuit = async (countKey, statusKey, threshold, window, breakDuration) => {
+                threshold = Number(threshold);
+                window = Number(window);
+                breakDuration = Number(breakDuration);
+
+                const count = await this.incr(countKey);
+                if (count === 1) {
+                    await this.expire(countKey, window + breakDuration);
+                }
+                if (count >= threshold) {
+                    await this.set(statusKey, 'OPEN', 'EX', breakDuration);
+                    this._data[countKey] = threshold - 1;
+                    await this.expire(countKey, window);
+                    return 'TRIPPED';
+                }
+                return 'OK';
+            };
+        }
+    },
+
     // Helper to reset state between tests
     _reset() { this._data = {}; this._calls = []; }
 };

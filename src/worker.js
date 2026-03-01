@@ -131,9 +131,15 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db'
 
 // --- 👷 WORKER PROCESSOR ---
 const worker = new Worker('webhook-queue', async (job) => {
-    const { url, payload, dbId, traceId, deliverySemantics } = job.data;
+    const { url, payload: rawPayload, dbId, traceId, deliverySemantics } = job.data;
     const tid = traceId || 'NO-TRACE-ID'; 
     const currentAttempt = job.attemptsMade + 1;
+
+    // 🛡️ PAYLOAD FORMAT GUARD: payload is stored as a JSON string in MongoDB
+    // since session 4.  Older jobs (pre-migration) may still carry an Object.
+    const payloadString = typeof rawPayload === 'string'
+        ? rawPayload
+        : JSON.stringify(rawPayload);
 
     // 1. Validate Delivery Semantics
     if (deliverySemantics !== 'AT_LEAST_ONCE_UNORDERED') {
@@ -165,7 +171,12 @@ const worker = new Worker('webhook-queue', async (job) => {
         const validatedIP = await assertNotPrivate(target.hostname);
 
         // 6. Prepare & Send Request
-        const signature = createHmacSignature(payload, process.env.WEBHOOK_SECRET);
+        //
+        // 🛡️ HMAC CONSISTENCY: `payloadString` is the exact string stored in
+        //    MongoDB.  We sign it, then send it verbatim via `transformRequest`
+        //    identity function — preventing Axios from re-serializing the body.
+        //    This guarantees:  HMAC(stored) === HMAC(sent) === HMAC(received)
+        const signature = createHmacSignature(payloadString, process.env.WEBHOOK_SECRET);
 
         // 🛡️ PIN AXIOS TO THE VALIDATED IP (Defeats DNS Rebinding / TOCTOU)
         // Without this, Axios performs its own internal DNS lookup which could
@@ -173,16 +184,29 @@ const worker = new Worker('webhook-queue', async (job) => {
         // Time-of-Check to Time-of-Use attack.  By overriding the Agent's
         // `lookup` function, we force Axios to connect to the exact IP we
         // already verified is not private.
+        //
+        // ⚠️  IPv6 NOTE: If the URL resolves to an IPv6 address, ensure the
+        // Docker container has IPv6 enabled (network_mode or enable_ipv6 in
+        // docker-compose).  Some OS network stacks silently drop IPv6 even
+        // when the lookup succeeds.
         const pinnedLookup = (_hostname, _opts, cb) => {
             if (typeof _opts === 'function') { cb = _opts; }
             cb(null, validatedIP, net.isIPv4(validatedIP) ? 4 : 6);
         };
 
-        const response = await axios.post(url, payload, {
+        const response = await axios.post(url, payloadString, {
             headers: { 
-                'X-Signature': signature, 
+                'X-Signature': signature,
+                // 🛡️ TRACE HEADER: Receivers can use this to deduplicate
+                // deliveries.  AT_LEAST_ONCE semantics mean we may deliver
+                // twice if MongoDB drops between Axios success and persistState.
+                'X-Webhook-Trace-Id': tid,
                 'Content-Type': 'application/json' 
             },
+            // 🛡️ PREVENT RE-SERIALIZATION: payloadString is already valid JSON.
+            // Without this, Axios calls JSON.stringify() on the string, wrapping
+            // it in extra quotes and breaking the receiver's HMAC verification.
+            transformRequest: [data => data],
             timeout: 5000,
 
             // 🛡️ DNS-PINNED AGENTS: Axios will use our pre-validated IP
@@ -196,6 +220,14 @@ const worker = new Worker('webhook-queue', async (job) => {
         });
 
         // 7. Handle Success
+        //
+        // ⚠️  DUAL-WRITE TRADE-OFF (The "Zombie Job" Problem)
+        // If Axios succeeds but MongoDB drops before persistState(), BullMQ
+        // retries the job → the webhook is delivered TWICE.  This is inherent
+        // to AT_LEAST_ONCE_UNORDERED semantics and is mathematically
+        // unavoidable without a two-phase commit or outbox pattern (the Two
+        // Generals' Problem).  Receivers MUST deduplicate using the
+        // X-Webhook-Trace-Id header we send above.
         await recordSuccess(url);
         if (process.env.NODE_ENV !== 'production') {
         console.log(`[Trace: ${tid}] ✅ Success: ${response.status}`);

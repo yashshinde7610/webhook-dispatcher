@@ -21,7 +21,16 @@ const EventSchema = new mongoose.Schema({
 
     // --- CORE DATA ---
     source: { type: String, default: 'API' }, // Defaulted to API if not sent
-    payload: { type: Object, required: true },
+
+    // 🛡️ PAYLOAD AS STRING (NoSQL Injection Protection + HMAC Consistency)
+    // Storing as a raw JSON string instead of Object prevents two critical flaws:
+    //   1. NoSQL INJECTION: Keys like "$gt" or "user.name" (dots/dollars) would
+    //      be interpreted as MongoDB operators or nested paths if stored as Object.
+    //   2. HMAC MISMATCH: The worker must sign the *exact bytes* it sends.
+    //      Storing as a string ensures sign(stored) === sign(sent) — no
+    //      parse/re-serialize cycle that changes whitespace or key order.
+    payload: { type: String, required: true },
+
     url: { type: String, required: true },    // ⚠️ Renamed from 'targetUrl' to match worker.js
 
     // --- IDEMPOTENCY (Disk-Backed) ---

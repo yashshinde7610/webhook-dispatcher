@@ -16,15 +16,47 @@ const FAILURE_THRESHOLD = 5;   // 5 failures...
 const FAILURE_WINDOW = 60;     // ...in 1 minute...
 const BREAK_DURATION = 30;     // ...trips the breaker for 30 seconds.
 
-// --- 🛡️ HALF-OPEN STATE MACHINE ---
+// --- 🛡️ ATOMIC FAILURE RECORDING (Lua Script) ---
 //
 // PROBLEM (old approach):
-//   Setting the counter to THRESHOLD-1 when the breaker trips means ALL 50
-//   concurrent workers will bypass the check simultaneously after the break
-//   expires, bombarding the recovering server with up to 50 requests.
+//   Sequential Redis calls (INCR → check → SET OPEN) are a classic
+//   "Check-Then-Act" race condition.  If 100 workers fail at the same
+//   millisecond, they all INCR, all see count >= threshold, and all
+//   independently fire SET OPEN.  Wasted network calls and potential
+//   inconsistency if EXPIRE or SET fails mid-sequence.
 //
 // THE FIX:
-//   Use three Redis keys per host:
+//   A Lua script runs atomically inside Redis (single-threaded).
+//   The increment, threshold check, and state transition are ONE operation
+//   — impossible to interleave.
+redis.defineCommand('tripCircuit', {
+    numberOfKeys: 2,
+    lua: `
+        local countKey     = KEYS[1]
+        local statusKey    = KEYS[2]
+        local threshold    = tonumber(ARGV[1])
+        local window       = tonumber(ARGV[2])
+        local breakDuration = tonumber(ARGV[3])
+
+        local count = redis.call('INCR', countKey)
+        if count == 1 then
+            redis.call('EXPIRE', countKey, window + breakDuration)
+        end
+        if count >= threshold then
+            redis.call('SET', statusKey, 'OPEN', 'EX', breakDuration)
+            -- Reset counter to threshold-1 so the half-open probe logic
+            -- kicks in once the OPEN key expires.
+            redis.call('SET', countKey, tostring(threshold - 1))
+            redis.call('EXPIRE', countKey, window)
+            return 'TRIPPED'
+        end
+        return 'OK'
+    `
+});
+
+// --- 🛡️ HALF-OPEN STATE MACHINE ---
+//
+//   Three Redis keys per host:
 //     circuit_status:{host}  — "OPEN" during break  (TTL = BREAK_DURATION)
 //     circuit_fails:{host}   — failure counter       (TTL = FAILURE_WINDOW)
 //     circuit_probe:{host}   — half-open probe lock  (TTL = 10s, SET NX)
@@ -72,30 +104,21 @@ async function getCircuitStatus(url) {
 }
 
 /**
- * Record a failure. If threshold reached, TRIP the breaker.
+ * Record a failure.  The Lua script atomically increments the counter,
+ * checks the threshold, and trips the breaker — all in one Redis round-trip.
  */
 async function recordFailure(url) {
     const host = extractHost(url);
     const countKey  = `circuit_fails:${host}`;
     const statusKey = `circuit_status:${host}`;
 
-    // 1. Increment failure count
-    const count = await redis.incr(countKey);
+    const result = await redis.tripCircuit(
+        countKey, statusKey,
+        FAILURE_THRESHOLD, FAILURE_WINDOW, BREAK_DURATION
+    );
 
-    // 2. If this is the first failure, set the window TTL
-    if (count === 1) {
-        await redis.expire(countKey, FAILURE_WINDOW + BREAK_DURATION);
-    }
-
-    // 3. Check Threshold
-    if (count >= FAILURE_THRESHOLD) {
+    if (result === 'TRIPPED') {
         console.warn(`🛡️  [CIRCUIT BREAKER] Tripped for: ${url}`);
-        // Set "OPEN" state for the cooldown duration
-        await redis.set(statusKey, 'OPEN', 'EX', BREAK_DURATION);
-        // Set counter to threshold-1 so the half-open logic kicks in
-        // once the OPEN key expires.
-        await redis.set(countKey, String(FAILURE_THRESHOLD - 1));
-        await redis.expire(countKey, FAILURE_WINDOW + BREAK_DURATION);
     }
 }
 
