@@ -1,31 +1,69 @@
 // tests/worker.test.js
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
-const { classifyError } = require('../src/utils/workerUtils');
+const { classifyError, safeHttpStatus, createHmacSignature } = require('../src/utils/workerUtils');
 
-describe('Worker Logic Tests (classifyError)', () => {
+describe('Error Classification', () => {
 
-    // ✅ Test 1: Transient Errors (Network)
-    test('Test 1 (Transient Error): Code ECONNREFUSED or ETIMEDOUT should return TRANSIENT', () => {
-        const errorRefused = { code: 'ECONNREFUSED' };
-        const errorTimeout = { code: 'ETIMEDOUT' };
-
-        assert.strictEqual(classifyError(errorRefused), 'TRANSIENT');
-        assert.strictEqual(classifyError(errorTimeout), 'TRANSIENT');
+    test('network errors (ECONNREFUSED, ETIMEDOUT) are TRANSIENT', () => {
+        assert.strictEqual(classifyError({ code: 'ECONNREFUSED' }), 'TRANSIENT');
+        assert.strictEqual(classifyError({ code: 'ETIMEDOUT' }), 'TRANSIENT');
+        assert.strictEqual(classifyError({ code: 'ECONNABORTED' }), 'TRANSIENT');
     });
 
-    // ✅ Test 2: Permanent Errors (Bad Request)
-    test('Test 2 (Permanent Error): Status 400 should return PERMANENT', () => {
-        const errorBadRequest = { response: { status: 400 } };
-        
-        assert.strictEqual(classifyError(errorBadRequest), 'PERMANENT');
+    test('4xx client errors are PERMANENT (no point retrying)', () => {
+        assert.strictEqual(classifyError({ response: { status: 400 } }), 'PERMANENT');
+        assert.strictEqual(classifyError({ response: { status: 404 } }), 'PERMANENT');
+        assert.strictEqual(classifyError({ response: { status: 422 } }), 'PERMANENT');
     });
 
-    // ✅ Test 3: Rate Limiting (Too Many Requests)
-    test('Test 3 (Rate Limiting): Status 429 should return TRANSIENT', () => {
-        const errorRateLimit = { response: { status: 429 } };
-        
-        assert.strictEqual(classifyError(errorRateLimit), 'TRANSIENT');
+    test('429 and 5xx are TRANSIENT (server might recover)', () => {
+        assert.strictEqual(classifyError({ response: { status: 429 } }), 'TRANSIENT');
+        assert.strictEqual(classifyError({ response: { status: 500 } }), 'TRANSIENT');
+        assert.strictEqual(classifyError({ response: { status: 503 } }), 'TRANSIENT');
     });
 
+    test('circuit breaker open is TRANSIENT', () => {
+        assert.strictEqual(classifyError({ message: 'Circuit Breaker Open' }), 'TRANSIENT');
+    });
+});
+
+describe('HTTP Status Sanitization', () => {
+
+    test('valid numbers pass through', () => {
+        assert.strictEqual(safeHttpStatus(200), 200);
+        assert.strictEqual(safeHttpStatus(404), 404);
+    });
+
+    test('numeric strings are coerced', () => {
+        assert.strictEqual(safeHttpStatus('500'), 500);
+    });
+
+    test('garbage returns null', () => {
+        assert.strictEqual(safeHttpStatus(undefined), null);
+        assert.strictEqual(safeHttpStatus(''), null);
+        assert.strictEqual(safeHttpStatus('not-a-number'), null);
+        assert.strictEqual(safeHttpStatus(NaN), null);
+    });
+});
+
+describe('HMAC Signature', () => {
+
+    test('produces consistent hex digest for the same input', () => {
+        const sig1 = createHmacSignature('{"test":true}', 'secret');
+        const sig2 = createHmacSignature('{"test":true}', 'secret');
+        assert.strictEqual(sig1, sig2);
+        assert.strictEqual(sig1.length, 64); // SHA-256 = 64 hex chars
+    });
+
+    test('different payloads produce different signatures', () => {
+        const sig1 = createHmacSignature('{"a":1}', 'secret');
+        const sig2 = createHmacSignature('{"a":2}', 'secret');
+        assert.notStrictEqual(sig1, sig2);
+    });
+
+    test('throws if secret is missing', () => {
+        assert.throws(() => createHmacSignature('{}', ''), /WEBHOOK_SECRET/);
+        assert.throws(() => createHmacSignature('{}', null), /WEBHOOK_SECRET/);
+    });
 });

@@ -1,17 +1,9 @@
 // src/utils/redact.js
 //
-// 🛡️ PII / SENSITIVE DATA REDACTION
-//
-// Webhooks frequently carry PII (emails, auth tokens, financial data).
-// This utility scrubs known-sensitive keys from objects before they are:
-//   1. Emitted over WebSocket to the dashboard
-//   2. Written to terminal/log output
-//   3. Included in error responses
-//
-// IMPORTANT: This is a shallow-recursive scrubber for display purposes.
-// The raw payload stored in MongoDB is intentionally NOT redacted — the
-// worker needs the original data to deliver the webhook.  Redaction only
-// applies to the "observation" layer (logs, dashboard, error messages).
+// Scrubs known-sensitive keys (passwords, tokens, emails, etc.) from
+// objects before they're sent to the dashboard or written to logs.
+// The raw payload in MongoDB is intentionally NOT redacted — the
+// worker needs the original data to deliver the webhook.
 
 const SENSITIVE_KEYS = new Set([
     'password', 'passwd', 'pass',
@@ -31,11 +23,7 @@ const REDACTED = '[REDACTED]';
 
 /**
  * Deep-clone an object with sensitive keys replaced by "[REDACTED]".
- * Safe to call with any type — non-objects are returned as-is.
- *
- * @param {*} obj - The data to redact (usually a parsed payload or headers)
- * @param {number} [maxDepth=5] - Maximum recursion depth to prevent stack overflow
- * @returns {*} A new object with sensitive values replaced
+ * Caps recursion depth to avoid stack overflow on weird payloads.
  */
 function redact(obj, maxDepth = 5) {
     if (obj === null || obj === undefined) return obj;
@@ -60,8 +48,8 @@ function redact(obj, maxDepth = 5) {
 }
 
 /**
- * Redact a JSON string payload for display.
- * Parses → redacts → re-stringifies.  Returns the original string on parse error.
+ * Parse a JSON string, redact it, re-stringify. Returns the original
+ * string unchanged if parsing fails.
  */
 function redactPayloadString(payloadString) {
     if (typeof payloadString !== 'string') return payloadString;

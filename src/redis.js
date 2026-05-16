@@ -2,22 +2,18 @@
 require('dotenv').config();
 const Redis = require('ioredis');
 
-// Docker passes "redis" as the host. Localhost is the fallback.
-const redisConfig = {
+const redis = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
     port: Number(process.env.REDIS_PORT) || 6379,
-    maxRetriesPerRequest: null
-};
-
-const redis = new Redis(redisConfig);
+    maxRetriesPerRequest: null // required by BullMQ
+});
 
 redis.on('connect', () => {
-    // This log proves if we are using Docker ("redis") or Local ("127.0.0.1")
-    console.log(`✅ Connected to Redis at ${redisConfig.host}:${redisConfig.port}`);
+    console.log(`Redis connected at ${redis.options.host}:${redis.options.port}`);
 });
 
 redis.on('error', (err) => {
-    console.error('❌ Redis Connection Error:', err);
+    console.error('Redis connection error:', err.message);
 });
 
 module.exports = redis;

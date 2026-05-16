@@ -2,9 +2,8 @@
 require('dotenv').config();
 const { Queue } = require('bullmq');
 
-// 🛡️ DEDICATED CONNECTION: BullMQ uses blocking commands (BRPOPLPUSH/BLMOVE).
-// Sharing the app's Redis instance would deadlock the API's idempotency checks
-// and circuit breaker. Pass connection *options* so BullMQ creates its own client.
+// BullMQ uses blocking commands (BLMOVE), so it needs its own connection
+// to avoid deadlocking the app's regular Redis operations.
 const connectionOptions = {
     host: process.env.REDIS_HOST || '127.0.0.1',
     port: Number(process.env.REDIS_PORT) || 6379
@@ -12,20 +11,18 @@ const connectionOptions = {
 
 const myQueue = new Queue('webhook-queue', { connection: connectionOptions });
 
-// 👇 We removed the idempotencyKey parameter completely
 async function addToQueue(data) {
     return await myQueue.add('webhook-job', data, {
-        attempts: 5, 
+        attempts: 5,
         backoff: {
             type: 'exponential',
-            delay: 1000 
+            delay: 1000
         },
-        // 👇 BullMQ now strictly uses the Mongo ID to track the job. 
-        // It trusts that the API already handled deduplication.
+        // Use the Mongo _id as the BullMQ job ID.
+        // Deduplication is already handled at the API layer.
         jobId: data.dbId ? data.dbId.toString() : undefined,
-        
         removeOnComplete: true,
-        removeOnFail: false 
+        removeOnFail: false
     });
 }
 

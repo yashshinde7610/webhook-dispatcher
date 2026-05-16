@@ -1,53 +1,22 @@
 // src/batchProcessor.js
 //
-// ARCHITECTURE NOTE — WHY THE IN-MEMORY BUFFER WAS REMOVED
-// =========================================================
-// The previous implementation buffered MongoDB writes in a volatile Node.js
-// array (`writeBuffer`), flushing periodically via setInterval, with a custom
-// Redis DLQ for overflow.  This caused three critical problems:
+// Direct MongoDB writes for job state transitions.
 //
-//   1. DATA LOSS ON CRASH — SIGKILL, OOM, or segfault instantly vaporizes
-//      everything in the buffer.  The "graceful shutdown" trap cannot help.
-//
-//   2. SPLIT-BRAIN AT SCALE — Multiple worker instances would blindly drain
-//      `webhook:mongo_overflow_dlq` without distributed locking, causing
-//      duplicated and out-of-order MongoDB writes.
-//
-//   3. REDUNDANT COMPLEXITY — BullMQ already stores durable job state in
-//      Redis and retries with exponential backoff.  A second buffering layer
-//      adds risk for zero benefit.
-//
-// THE FIX:
-//   Every state transition is now a direct, atomic, **awaited** MongoDB write.
-//   If MongoDB is temporarily unreachable the write throws, the error
-//   propagates up to the BullMQ worker processor, and BullMQ retries the
-//   entire job with exponential backoff — exactly the durability guarantee
-//   we need, with zero custom code.
+// We used to buffer writes in memory and flush periodically, but that
+// caused data loss on crash and split-brain issues with multiple workers.
+// Now every state change is an awaited atomic write — if Mongo is down,
+// the error propagates to BullMQ which retries the whole job.
 //
 const Event = require('./models/Event');
 const { safeHttpStatus } = require('./utils/workerUtils');
 
 /**
- * Persist a job state transition directly to MongoDB (atomic write).
- *
- * Replaces the old fire-and-forget `addToBatch()`.  Every call is awaited,
- * so failures bubble up to BullMQ which retries the job automatically.
- *
- * @param {Object} data
- * @param {string}  data.dbId           - Mongoose ObjectId for the Event document
- * @param {string}  data.status         - Target status (PROCESSING, COMPLETED, …)
- * @param {boolean} [data.upsert]       - Create the document if it doesn't exist
- * @param {Object}  [data.initialData]  - Fields for $setOnInsert (first write)
- * @param {Object}  [data.logEntry]     - Entry to $push into `logs`
- * @param {string}  [data.failureType]  - TRANSIENT | PERMANENT
- * @param {string}  [data.lastError]    - Human-readable error message
- * @param {*}       [data.httpStatus]   - Raw HTTP status (sanitized here)
- * @param {string}  [data.errorCode]    - e.g. ECONNREFUSED
+ * Persist a job state transition directly to MongoDB.
+ * Failures bubble up to BullMQ which handles retries.
  */
 async function persistState(data) {
     if (!data.dbId) return;
 
-    // --- Sanitize httpStatus (ported from the old buffer's defensive guards) ---
     let finalHttpStatus = data.finalHttpStatus ?? null;
     let errorCode = data.errorCode || null;
 
@@ -60,7 +29,6 @@ async function persistState(data) {
         }
     }
 
-    // --- Build the atomic update ---
     const update = {
         $set: {
             status: data.status,
@@ -72,26 +40,22 @@ async function persistState(data) {
     };
 
     if (data.logEntry) {
-        // 🛡️ BOUNDED ARRAY: $slice keeps only the N most recent log entries,
-        // preventing unbounded document growth toward MongoDB's 16 MB limit.
-        // The cap is co-located with the schema (Event.MAX_LOGS).
+        // $slice keeps only the last N entries to prevent unbounded growth
         update.$push = {
             logs: {
                 $each: [data.logEntry],
-                $slice: -(Event.MAX_LOGS || 20)   // negative = keep last N
+                $slice: -(Event.MAX_LOGS || 20)
             }
         };
     }
 
     const options = {};
 
-    // Upsert on first touch — $setOnInsert writes immutable fields only once.
     if (data.upsert && data.initialData) {
         options.upsert = true;
         update.$setOnInsert = data.initialData;
     }
 
-    // Increment attempt count for actual delivery attempts
     if (data.incrementAttempt || (data.upsert && data.initialData)) {
         update.$inc = { ...(update.$inc || {}), attemptCount: 1 };
     }
@@ -101,7 +65,6 @@ async function persistState(data) {
 
 module.exports = {
     persistState,
-    // Backward-compatible aliases so callers migrate incrementally
-    addToBatch: persistState,
-    shutdownBatchProcessor: async () => { /* no-op — nothing to flush */ },
+    addToBatch: persistState, // backward compat
+    shutdownBatchProcessor: async () => { /* no-op */ },
 };

@@ -1,20 +1,13 @@
 #!/usr/bin/env node
-// ═══════════════════════════════════════════════════════════════
-//  tests/fullTest.js — COMPREHENSIVE VISUAL TEST SUITE
-// ═══════════════════════════════════════════════════════════════
+// tests/fullTest.js
 //
-//  Part 1: UNIT TESTS   — Pure logic, zero external dependencies
-//  Part 2: E2E  TESTS   — Live services (MongoDB, Redis, API, Worker)
+// Part 1: Unit tests (pure logic, no deps)
+// Part 2: E2E tests (requires running API + Worker + Redis + MongoDB)
 //
-//  Usage:
-//    node tests/fullTest.js                  # Full suite
-//    node tests/fullTest.js --unit-only      # Unit tests only
-//    node tests/fullTest.js --e2e-only       # E2E tests only
-//
-//  Prerequisites for E2E:
-//    • docker-compose up -d    OR
-//    • locally running: mongod, redis-server, node server.js, node src/worker.js
-//    • .env with API_KEY, DASHBOARD_TOKEN, WEBHOOK_SECRET
+// Usage:
+//   node tests/fullTest.js             # full suite
+//   node tests/fullTest.js --unit-only
+//   node tests/fullTest.js --e2e-only
 //
 require('dotenv').config();
 const chalk   = require('chalk');
@@ -23,7 +16,7 @@ const crypto  = require('crypto');
 const http    = require('http');
 const axios   = require('axios');
 
-// ── CONFIG ──────────────────────────────────────────────────────
+// Config
 const API_BASE        = process.env.TEST_API_URL || 'http://localhost:3000';
 const API_KEY         = process.env.API_KEY;
 const DASHBOARD_TOKEN = process.env.DASHBOARD_TOKEN;
@@ -35,17 +28,17 @@ const args      = process.argv.slice(2);
 const UNIT_ONLY = args.includes('--unit-only');
 const E2E_ONLY  = args.includes('--e2e-only');
 
-// ── COUNTERS ────────────────────────────────────────────────────
+// Counters
 let unitPassed = 0, unitFailed = 0;
 let e2ePassed  = 0, e2eFailed  = 0, e2eSkipped = 0;
 const failures = [];
 
-// ── VISUAL HELPERS ──────────────────────────────────────────────
-const PASS = chalk.green('  ✅');
-const FAIL = chalk.red('  ❌');
-const SKIP = chalk.yellow('  ⏭️ ');
-const WAIT = chalk.cyan('  ⏳');
-const INFO = chalk.blue('  ℹ️ ');
+// Visual helpers
+const PASS = chalk.green('  PASS');
+const FAIL = chalk.red('  FAIL');
+const SKIP = chalk.yellow('  SKIP');
+const WAIT = chalk.cyan('  WAIT');
+const INFO = chalk.blue('  INFO');
 
 function banner(text) {
     const line = '═'.repeat(62);
@@ -103,19 +96,16 @@ function sleep(ms) {
 }
 
 
-// ── IMPORTS (Pure utility modules — no side effects) ────────────
+// Imports (pure utility modules)
 const { classifyError, safeHttpStatus, createHmacSignature } = require('../src/utils/workerUtils');
 const { redact, redactPayloadString, REDACTED }               = require('../src/utils/redact');
 const { applyFieldMask }                                       = require('../src/utils/fieldMask');
 
 
-// ═════════════════════════════════════════════════════════════════
-//  PART 1: UNIT TESTS (Pure Logic)
-// ═════════════════════════════════════════════════════════════════
+// --- Part 1: Unit Tests (pure logic) ---
 async function runUnitTests() {
-    section('PHASE 1: UNIT TESTS (Pure Logic — No External Deps)');
+    section('PHASE 1: UNIT TESTS');
 
-    // ── 1.1 classifyError ─────────────────────────────────────
     subsection('1.1  classifyError()');
 
     await unitTest('ECONNREFUSED → TRANSIENT', () => {
@@ -166,7 +156,6 @@ async function runUnitTests() {
         assert.strictEqual(classifyError({}), 'TRANSIENT');
     });
 
-    // ── 1.2 safeHttpStatus ────────────────────────────────────
     subsection('1.2  safeHttpStatus()');
 
     await unitTest('Number 200 → 200', () => {
@@ -209,7 +198,6 @@ async function runUnitTests() {
         assert.strictEqual(safeHttpStatus(true), null);
     });
 
-    // ── 1.3 createHmacSignature ───────────────────────────────
     subsection('1.3  createHmacSignature()');
 
     await unitTest('Produces 64-char hex string (SHA-256)', () => {
@@ -252,7 +240,6 @@ async function runUnitTests() {
         assert.strictEqual(fromString, fromObject);
     });
 
-    // ── 1.4 redact ────────────────────────────────────────────
     subsection('1.4  redact()');
 
     await unitTest('Redacts "password" key', () => {
@@ -318,7 +305,6 @@ async function runUnitTests() {
         assert.deepStrictEqual(original, copy);
     });
 
-    // ── 1.5 redactPayloadString ───────────────────────────────
     subsection('1.5  redactPayloadString()');
 
     await unitTest('Parses → redacts → re-stringifies JSON', () => {
@@ -338,7 +324,6 @@ async function runUnitTests() {
         assert.strictEqual(redactPayloadString(undefined), undefined);
     });
 
-    // ── 1.6 applyFieldMask ────────────────────────────────────
     subsection('1.6  applyFieldMask()');
 
     await unitTest('Includes only fields listed in the mask', () => {
@@ -373,8 +358,7 @@ async function runUnitTests() {
         assert.deepStrictEqual(result, { status: 'OK', url: 'http://x.com' });
     });
 
-    // ── 1.7 Circuit Breaker (Mocked Redis) ────────────────────
-    subsection('1.7  Circuit Breaker (Mocked Redis)');
+    subsection('1.7  Circuit Breaker (mocked Redis)');
 
     // Build an in-process Redis mock
     const mockRedis = {
@@ -457,14 +441,11 @@ async function runUnitTests() {
 }
 
 
-// ═════════════════════════════════════════════════════════════════
-//  PART 2: END-TO-END / INTEGRATION TESTS (Live Services)
-// ═════════════════════════════════════════════════════════════════
+// --- Part 2: E2E Tests (live services required) ---
 async function runE2ETests() {
-    section('PHASE 2: INTEGRATION / E2E TESTS (Live Services)');
+    section('PHASE 2: E2E TESTS');
 
-    // ── Pre-flight checks ─────────────────────────────────────
-    subsection('2.0  Pre-flight — Environment & Connectivity');
+    subsection('2.0  Pre-flight checks');
 
     if (!API_KEY) {
         console.log(chalk.red('\n  ⚠️  API_KEY not set in .env — E2E tests require it.'));
@@ -504,8 +485,7 @@ async function runE2ETests() {
     // Track event IDs for cleanup
     const createdIds = [];
 
-    // ── 2.1 Authentication ────────────────────────────────────
-    subsection('2.1  Authentication (API Key Guard)');
+    subsection('2.1  Authentication');
 
     await e2eTest('GET /api/events without API key → 403', async () => {
         const res = await noAuth.get('/api/events');
@@ -533,8 +513,7 @@ async function runE2ETests() {
         assert.ok(res.data.pagination, 'Response should have pagination object');
     });
 
-    // ── 2.2 Input Validation ──────────────────────────────────
-    subsection('2.2  Input Validation (Joi Schema)');
+    subsection('2.2  Input Validation');
 
     await e2eTest('POST missing "url" → 400 VALIDATION_FAILED', async () => {
         const res = await api.post('/api/events', { payload: { a: 1 } });
@@ -567,8 +546,7 @@ async function runE2ETests() {
         assert.strictEqual(res.status, 400);
     });
 
-    // ── 2.3 Event Creation (Happy Path) ───────────────────────
-    subsection('2.3  Event Creation (POST /api/events)');
+    subsection('2.3  Event Creation');
 
     let primaryEventId  = null;
     let primaryTraceId  = null;
@@ -597,8 +575,7 @@ async function runE2ETests() {
         createdIds.push(res.data.id);
     });
 
-    // ── 2.4 GET Routes (Read) ─────────────────────────────────
-    subsection('2.4  GET /api/events & GET /api/events/:id');
+    subsection('2.4  GET routes');
 
     await e2eTest('GET /api/events → 200 with paginated list', async () => {
         const res = await api.get('/api/events');
@@ -631,8 +608,7 @@ async function runE2ETests() {
         assert.strictEqual(res.status, 404);
     });
 
-    // ── 2.5 Worker Lifecycle (Delivery) ───────────────────────
-    subsection('2.5  Event Lifecycle (Worker Processing)');
+    subsection('2.5  Worker lifecycle');
 
     if (primaryEventId) {
         console.log(`${WAIT} Polling event status for up to 20 seconds...`);
@@ -675,8 +651,7 @@ async function runE2ETests() {
         e2eSkip('Worker lifecycle tests', 'No event was created in step 2.3');
     }
 
-    // ── 2.6 Idempotency ──────────────────────────────────────
-    subsection('2.6  Idempotency (Duplicate Prevention)');
+    subsection('2.6  Idempotency');
 
     const idempKey = `test-idemp-${crypto.randomBytes(6).toString('hex')}`;
 
@@ -705,8 +680,7 @@ async function runE2ETests() {
         info(`Collision detected — existing: ${res.data.existingId} (${res.data.existingStatus})`);
     });
 
-    // ── 2.7 PATCH (Field Mask) ────────────────────────────────
-    subsection('2.7  PATCH /api/events/:id (Field Mask)');
+    subsection('2.7  PATCH with field mask');
 
     if (primaryEventId) {
         await e2eTest('PATCH without updateMask → 400 (no valid fields)', async () => {
@@ -755,8 +729,7 @@ async function runE2ETests() {
         });
     }
 
-    // ── 2.8 Replay ────────────────────────────────────────────
-    subsection('2.8  Replay (POST /api/events/:id/replay)');
+    subsection('2.8  Replay');
 
     if (primaryEventId) {
         // First reset status to allow replay
@@ -777,8 +750,7 @@ async function runE2ETests() {
         });
     }
 
-    // ── 2.9 SSRF Protection ──────────────────────────────────
-    subsection('2.9  SSRF Protection (Private IP Rejection)');
+    subsection('2.9  SSRF protection');
 
     await e2eTest('Webhook targeting 127.0.0.1 → accepted but worker rejects (SSRF)', async () => {
         const res = await api.post('/api/events', {
@@ -813,8 +785,7 @@ async function runE2ETests() {
         }
     });
 
-    // ── 2.10 Dashboard & Static Files ─────────────────────────
-    subsection('2.10  Dashboard (Static Files & Socket.IO)');
+    subsection('2.10  Dashboard');
 
     await e2eTest('GET / → 200 serves dashboard HTML', async () => {
         const res = await noAuth.get('/');
@@ -830,8 +801,7 @@ async function runE2ETests() {
         assert.strictEqual(res.status, 200);
     });
 
-    // ── 2.11 Rate Limiting ────────────────────────────────────
-    subsection('2.11  Rate Limiting (Quick Sanity Check)');
+    subsection('2.11  Rate limiting');
 
     await e2eTest('Rate limiter headers present (RateLimit-*)', async () => {
         const res = await api.post('/api/events', {
@@ -847,8 +817,7 @@ async function runE2ETests() {
         if (res.status === 202) createdIds.push(res.data.id);
     });
 
-    // ── 2.12 Force Retry (x-force-retry header) ──────────────
-    subsection('2.12  Force Retry (Idempotency + x-force-retry)');
+    subsection('2.12  Force retry');
 
     const retryKey = `test-retry-${crypto.randomBytes(4).toString('hex')}`;
 
@@ -888,8 +857,7 @@ async function runE2ETests() {
         });
     }
 
-    // ── 2.13 DELETE Route ─────────────────────────────────────
-    subsection('2.13  DELETE /api/events/:id');
+    subsection('2.13  DELETE route');
 
     // Create a throwaway event to delete
     const delRes = await api.post('/api/events', {
@@ -915,8 +883,7 @@ async function runE2ETests() {
         });
     }
 
-    // ── 2.14 Cleanup Test Events ──────────────────────────────
-    subsection('2.14  Cleanup (Removing Test Events)');
+    subsection('2.14  Cleanup');
 
     let cleaned = 0;
     for (const id of createdIds) {
@@ -929,9 +896,7 @@ async function runE2ETests() {
 }
 
 
-// ═════════════════════════════════════════════════════════════════
-//  MAIN RUNNER
-// ═════════════════════════════════════════════════════════════════
+// --- Main runner ---
 async function main() {
     banner('WEBHOOK DISPATCHER — FULL TEST SUITE');
 
@@ -946,7 +911,7 @@ async function main() {
     if (!E2E_ONLY) await runUnitTests();
     if (!UNIT_ONLY) await runE2ETests();
 
-    // ── FINAL SCORECARD ─────────────────────────────────────────
+    // Final scorecard
     const elapsed     = ((Date.now() - startTime) / 1000).toFixed(1);
     const totalPassed = unitPassed + e2ePassed;
     const totalFailed = unitFailed + e2eFailed;
@@ -995,19 +960,18 @@ async function main() {
 
     // Visual banner
     if (totalFailed === 0) {
-        console.log(chalk.green('\n  🎉  All tests passed — your webhook-dispatcher is solid!'));
+        console.log(chalk.green('\n  All tests passed.'));
         if (!UNIT_ONLY) {
-            console.log(chalk.dim(`\n  💡  Open the dashboard for visual confirmation:`));
-            console.log(chalk.cyan(`      ${API_BASE}?token=${DASHBOARD_TOKEN || 'YOUR_DASHBOARD_TOKEN'}\n`));
+            console.log(chalk.dim(`\n  Dashboard: ${API_BASE}?token=${DASHBOARD_TOKEN || 'YOUR_DASHBOARD_TOKEN'}\n`));
         }
     } else {
-        console.log(chalk.red('\n  🔧  Some tests failed — review the errors above.\n'));
+        console.log(chalk.red('\n  Some tests failed — review the errors above.\n'));
     }
 
     process.exit(totalFailed > 0 ? 1 : 0);
 }
 
 main().catch(err => {
-    console.error(chalk.red('\n💥 Unexpected error in test runner:'), err);
+    console.error(chalk.red('\nTest runner error:'), err);
     process.exit(1);
 });

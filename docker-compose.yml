@@ -1,15 +1,11 @@
-version: '3.8'
-
 services:
-  # 🤫 REDIS (Muted)
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
     logging:
-      driver: "none" # 🔇 This effectively turns off logs for this container
+      driver: "none"
 
-  # 🤫 MONGO (Muted)
   mongo:
     image: mongo:latest
     ports:
@@ -17,9 +13,8 @@ services:
     volumes:
       - mongo-data:/data/db
     logging:
-      driver: "none" # 🔇 This effectively turns off logs for this container
+      driver: "none"
 
-  # 🗣️ API (Loud & Clear)
   api:
     build: .
     command: node server.js
@@ -30,15 +25,14 @@ services:
       - MONGO_URI=mongodb://mongo:27017/webhook-db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET} # 👈 Pulls from .env
-      - API_KEY=${API_KEY}               # 👈 Pulls from .env
-      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN} # 👈 Read-only dashboard auth
-      - GEMINI_API_KEY=${GEMINI_API_KEY}     # 👈 Gemini AI for DLQ suggestions
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      - API_KEY=${API_KEY}
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       - mongo
       - redis
 
-  # 🗣️ WORKER (Loud & Clear)
   worker:
     build: .
     command: node src/worker.js
@@ -46,7 +40,7 @@ services:
       - MONGO_URI=mongodb://mongo:27017/webhook-db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET} # 👈 Pulls from .env
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
     depends_on:
       - mongo
       - redis
