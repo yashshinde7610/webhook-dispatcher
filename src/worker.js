@@ -209,6 +209,15 @@ const worker = new Worker('webhook-queue', async (job) => {
         const controller = new AbortController();
         const abortTimer = setTimeout(() => controller.abort(), 5000);
 
+        // 🛡️ DNS-PINNED AGENTS (scoped to this request)
+        // Each request needs its own agent because the pinned IP differs per
+        // target host.  We create them here and destroy them in the `finally`
+        // block below to prevent leaked TCP connection pools from accumulating
+        // in memory.  Without explicit cleanup, 50 concurrent jobs would leak
+        // 50 agents per second — each holding open its own socket pool.
+        const pinnedHttpAgent  = new http.Agent({ lookup: pinnedLookup, keepAlive: false });
+        const pinnedHttpsAgent = new https.Agent({ lookup: pinnedLookup, keepAlive: false });
+
         let response;
         try {
             response = await axios.post(url, payloadString, {
@@ -227,9 +236,8 @@ const worker = new Worker('webhook-queue', async (job) => {
                 timeout: 5000,
                 signal: controller.signal, // Strict wall-clock abort
 
-                // 🛡️ DNS-PINNED AGENTS: Axios will use our pre-validated IP
-                httpAgent:  new http.Agent({ lookup: pinnedLookup }),
-                httpsAgent: new https.Agent({ lookup: pinnedLookup }),
+                httpAgent:  pinnedHttpAgent,
+                httpsAgent: pinnedHttpsAgent,
 
                 // 🛡️ OOM PROTECTION
                 maxContentLength:  1 * 1024 * 1024,
@@ -238,6 +246,8 @@ const worker = new Worker('webhook-queue', async (job) => {
             });
         } finally {
             clearTimeout(abortTimer); // Prevent timer leak on success/early failure
+            pinnedHttpAgent.destroy();  // Close all sockets in this agent's pool
+            pinnedHttpsAgent.destroy(); // Prevents TCP connection leak at scale
         }
 
         // 7. Handle Success
