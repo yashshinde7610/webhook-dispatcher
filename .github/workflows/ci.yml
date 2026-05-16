@@ -1,0 +1,145 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  #  Stage 1: Unit Tests (No external services required)
+  # ─────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18, 20]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm run test:unit
+        env:
+          # Worker env validation requires WEBHOOK_SECRET at module load
+          WEBHOOK_SECRET: ci_test_secret
+          API_KEY: ci_test_api_key
+          DASHBOARD_TOKEN: ci_test_dashboard_token
+
+  # ─────────────────────────────────────────────────────────────
+  #  Stage 2: Integration / E2E Tests (Redis + MongoDB required)
+  # ─────────────────────────────────────────────────────────────
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    services:
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start API server (background)
+        run: node server.js &
+        env:
+          PORT: 3000
+          API_KEY: ci_test_api_key
+          WEBHOOK_SECRET: ci_test_secret
+          DASHBOARD_TOKEN: ci_test_dashboard_token
+          MONGO_URI: mongodb://localhost:27017/webhook-db-ci
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Start Worker (background)
+        run: node src/worker.js &
+        env:
+          WEBHOOK_SECRET: ci_test_secret
+          API_KEY: ci_test_api_key
+          DASHBOARD_TOKEN: ci_test_dashboard_token
+          MONGO_URI: mongodb://localhost:27017/webhook-db-ci
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for API server..."
+          for i in $(seq 1 15); do
+            if curl -s http://localhost:3000/ > /dev/null 2>&1; then
+              echo "API server is up!"
+              break
+            fi
+            echo "  attempt $i..."
+            sleep 2
+          done
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+        env:
+          API_KEY: ci_test_api_key
+          WEBHOOK_SECRET: ci_test_secret
+          DASHBOARD_TOKEN: ci_test_dashboard_token
+          MONGO_URI: mongodb://localhost:27017/webhook-db-ci
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          TEST_API_URL: http://localhost:3000
+          TEST_WEBHOOK_TARGET: https://httpbin.org/post
+
+  # ─────────────────────────────────────────────────────────────
+  #  Stage 3: Docker Build Verification
+  # ─────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t webhook-dispatcher:${{ github.sha }} .
+
+      - name: Verify image was created
+        run: docker image inspect webhook-dispatcher:${{ github.sha }}
