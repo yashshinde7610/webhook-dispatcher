@@ -937,10 +937,10 @@ async function main() {
     console.log(chalk.dim('  │') + chalk.dim(`  ${'─'.repeat(40)}`.padEnd(w)) + chalk.dim('│'));
 
     if (totalFailed === 0) {
-        const msg = `  TOTAL: ${totalPassed}/${total} passed  ✅  ALL CLEAR`;
+        const msg = `  TOTAL: ${totalPassed}/${total} passed — ALL CLEAR`;
         console.log(chalk.dim('  │') + chalk.bold.green(msg.padEnd(w)) + chalk.dim('│'));
     } else {
-        const msg = `  TOTAL: ${totalPassed}/${total} passed, ${totalFailed} FAILED ❌`;
+        const msg = `  TOTAL: ${totalPassed}/${total} passed, ${totalFailed} FAILED`;
         console.log(chalk.dim('  │') + chalk.bold.red(msg.padEnd(w)) + chalk.dim('│'));
     }
 

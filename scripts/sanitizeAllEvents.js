@@ -110,7 +110,7 @@ async function run() {
   console.log(`Connecting to ${MONGO_URI} ...`);
   await mongoose.connect(MONGO_URI, {});
 
-  // --- 🛡️ PAGINATED _id-RANGE SCAN ---
+  // Paginated _id-range scan to avoid loading the entire collection
   // Instead of Event.find().cursor() which attempts to load the entire
   // collection and locks the DB, we paginate by _id in ascending order.
   // Each page fetches at most PAGE_SIZE documents, keeping RAM bounded

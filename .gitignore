@@ -4,4 +4,5 @@ node_modules/
 npm-debug.log
 docker-data/
 coverage/
-loadtest.js
+*.log
+.gemini/
