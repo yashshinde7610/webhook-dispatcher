@@ -1,12 +1,15 @@
-// server.js
+// server.js — API entry point
+// Sets up Express, Socket.IO, queue listeners, and mounts routes.
+// Business logic lives in src/api/controllers/.
 const connectDB = require('./src/db');
 connectDB();
+
 const redis = require('./src/redis');
-const crypto = require('crypto');
 const logger = require('./src/utils/logger');
+const { redactPayloadString } = require('./src/utils/redact');
 require('dotenv').config();
 
-// Crash at startup if critical env vars are missing
+// Crash fast if critical env vars are missing
 const REQUIRED_ENV = ['API_KEY', 'DASHBOARD_TOKEN'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {
@@ -21,49 +24,37 @@ const { Server } = require('socket.io');
 const { myQueue } = require('./src/queue');
 const { QueueEvents } = require('bullmq');
 const { startSweeper, stopSweeper } = require('./src/services/zombieSweeper');
+const { validateApiKey, safeCompare } = require('./src/api/middleware');
 const eventRoutes = require('./src/api/routes/eventRoutes');
-
-// Constant-time string comparison to prevent timing side-channel attacks
-const safeCompare = (a, b) => {
-    const bufA = Buffer.from(String(a || ''));
-    const bufB = Buffer.from(String(b || ''));
-    if (bufA.length !== bufB.length) {
-        crypto.timingSafeEqual(bufA, bufA);
-        return false;
-    }
-    return crypto.timingSafeEqual(bufA, bufB);
-};
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Redis adapter for Socket.IO
+// ── Socket.IO: Redis adapter for multi-replica pub/sub ──
 const { createAdapter } = require('@socket.io/redis-adapter');
 const IORedis = require('ioredis');
 const pubClient = new IORedis({ host: process.env.REDIS_HOST || '127.0.0.1', port: Number(process.env.REDIS_PORT) || 6379 });
 const subClient = pubClient.duplicate();
 io.adapter(createAdapter(pubClient, subClient));
 
-// WebSocket auth — dashboard uses a separate read-only token
+// Dashboard websocket auth (separate read-only token)
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
-    if (safeCompare(token, process.env.DASHBOARD_TOKEN)) {
-        return next();
-    }
+    if (safeCompare(token, process.env.DASHBOARD_TOKEN)) return next();
     return next(new Error('Authentication error: Invalid Dashboard Token'));
 });
 
-// Body parsing with raw body capture for HMAC verification
+// ── Express middleware ──
 app.use(express.json({
     limit: '1mb',
-    verify: (req, _res, buf) => {
-        req.rawBody = buf;
-    }
+    verify: (req, _res, buf) => { req.rawBody = buf; }
 }));
 app.use(express.static('public'));
 
-// WebSocket batching
+// ── WebSocket batching ──
+// At high throughput, emitting per-job updates would choke the event loop.
+// Buffer updates and flush as a batch instead.
 const WS_BATCH_INTERVAL_MS = Number(process.env.WS_BATCH_INTERVAL_MS) || 500;
 let jobUpdateBuffer = [];
 
@@ -78,7 +69,11 @@ setInterval(() => {
     io.emit('job-update-batch', batch);
 }, WS_BATCH_INTERVAL_MS);
 
-// Queue event listeners
+// Make enqueueJobUpdate available to controllers via app.locals
+// (avoids threading callbacks through factory functions)
+app.locals.enqueueJobUpdate = enqueueJobUpdate;
+
+// ── Queue event listeners ──
 const queueEvents = new QueueEvents('webhook-queue', {
     connection: {
         host: process.env.REDIS_HOST || '127.0.0.1',
@@ -91,18 +86,14 @@ queueEvents.on('completed', ({ jobId, returnvalue }) => {
     if (typeof returnvalue === 'object') {
         result = returnvalue;
     } else if (typeof returnvalue === 'string') {
-        try {
-            result = JSON.parse(returnvalue);
-        } catch (e) {
-            result = { status: 'Completed', response: returnvalue };
-        }
+        try { result = JSON.parse(returnvalue); }
+        catch (e) { result = { status: 'Completed', response: returnvalue }; }
     }
 
     let realId = jobId;
     if (result && result.dbId) realId = result.dbId;
 
     logger.info({ jobId: realId }, 'Job completed');
-
     enqueueJobUpdate({
         id: realId,
         status: result.status || 'Completed',
@@ -122,19 +113,10 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
     enqueueJobUpdate({ id: realId, status: 'Failed', reason: failedReason });
 });
 
-// Middleware for API Key Validation
-const validateApiKey = (req, res, next) => {
-    const apiKey = req.headers['x-api-key'];
-    if (!safeCompare(apiKey, process.env.API_KEY)) {
-        return res.status(403).json({ error: 'Access Denied: Invalid API Key' });
-    }
-    next();
-};
+// ── Mount routes ──
+app.use('/api/events', validateApiKey, eventRoutes);
 
-// Mount API routes
-app.use('/api/events', validateApiKey, eventRoutes(enqueueJobUpdate));
-
-// Dashboard health heartbeat (every 2s)
+// Dashboard health heartbeat
 setInterval(async () => {
     try {
         const counts = await myQueue.getJobCounts('waiting', 'active', 'completed', 'failed');
@@ -145,12 +127,11 @@ setInterval(async () => {
             completed: counts.completed,
             redisStatus: redis.status
         });
-    } catch (err) { /* metrics are best-effort */ }
+    } catch (err) { /* best-effort */ }
 }, 2000);
 
-// Start server
+// ── Start ──
 const PORT = process.env.PORT || 3000;
-
 server.listen(PORT, () => {
     logger.info({
         port: PORT,
@@ -163,7 +144,9 @@ server.listen(PORT, () => {
     startSweeper();
 });
 
-// Graceful shutdown
+// ── Graceful shutdown ──
+// Drain in-flight HTTP requests before closing DB connections,
+// otherwise SIGTERM during a POST kills Mongo mid-save.
 let shutdownInProgress = false;
 async function gracefulShutdown(signal) {
     if (shutdownInProgress) return;
@@ -181,7 +164,6 @@ async function gracefulShutdown(signal) {
             pubClient.disconnect();
             subClient.disconnect();
             await redis.quit();
-
             logger.info('Shutdown complete');
             process.exit(0);
         } catch (shutdownErr) {
@@ -192,14 +174,13 @@ async function gracefulShutdown(signal) {
 
     // Force-exit after 15s if draining hangs
     setTimeout(() => {
-        logger.error('Forced shutdown after drain timeout (15 s)');
+        logger.error('Forced shutdown after drain timeout (15s)');
         process.exit(1);
     }, 15_000).unref();
 }
 
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
 process.on('uncaughtException', (err) => {
     logger.fatal({ err }, 'UNCAUGHT EXCEPTION');
     gracefulShutdown('uncaughtException');
