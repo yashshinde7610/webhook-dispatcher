@@ -8,7 +8,7 @@ require('dotenv').config();
 const logger = require('./src/utils/logger');
 
 // Crash fast if critical env vars are missing
-const REQUIRED_ENV = ['API_KEY', 'DASHBOARD_TOKEN'];
+const REQUIRED_ENV = ['API_KEY', 'DASHBOARD_TOKEN', 'WEBHOOK_SECRET'];
 const missing = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missing.length > 0) {
     logger.fatal({ missing }, 'Missing required environment variables');
@@ -35,7 +35,7 @@ const server = http.createServer(app);
 // ── Socket.IO: restrict CORS in production ──
 const io = new Server(server, {
     cors: {
-        origin: process.env.DASHBOARD_ORIGIN || '*',
+        origin: process.env.DASHBOARD_ORIGIN || false,
     }
 });
 
@@ -58,7 +58,7 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'"],
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
             fontSrc: ["'self'", "https://fonts.gstatic.com"],
             connectSrc: ["'self'", "ws:", "wss:"],
@@ -82,7 +82,7 @@ function enqueueJobUpdate(update) {
     jobUpdateBuffer.push(update);
 }
 
-setInterval(() => {
+const wsBatchTimer = setInterval(() => {
     if (jobUpdateBuffer.length === 0) return;
     const batch = jobUpdateBuffer;
     jobUpdateBuffer = [];
@@ -137,7 +137,7 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
 app.use('/api/events', validateApiKey, eventRoutes);
 
 // Dashboard health heartbeat
-setInterval(async () => {
+const dashboardStatsTimer = setInterval(async () => {
     try {
         const counts = await myQueue.getJobCounts('waiting', 'active', 'completed', 'failed');
         io.emit('dashboard-stats', {
@@ -181,6 +181,8 @@ async function gracefulShutdown(signal) {
     logger.info({ signal }, 'Graceful shutdown initiated');
 
     stopSweeper();
+    clearInterval(wsBatchTimer);
+    clearInterval(dashboardStatsTimer);
 
     server.close(async (err) => {
         if (err) logger.error({ err }, 'Error draining HTTP connections');

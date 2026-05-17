@@ -5,6 +5,11 @@ services:
       - "6379:6379"
     logging:
       driver: "none"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   mongo:
     image: mongo:latest
@@ -14,6 +19,11 @@ services:
       - mongo-data:/data/db
     logging:
       driver: "none"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
@@ -30,8 +40,10 @@ services:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
       - DASHBOARD_ORIGIN=${DASHBOARD_ORIGIN}
     depends_on:
-      - mongo
-      - redis
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   worker:
     build: .
@@ -42,8 +54,10 @@ services:
       - REDIS_PORT=6379
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
     depends_on:
-      - mongo
-      - redis
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   mongo-data:

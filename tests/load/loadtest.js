@@ -39,5 +39,6 @@ export default function () {
     },
   };
 
-  http.post(url, payload, params);
+  const res = http.post(url, payload, params);
+  check(res, { 'status is 202': (r) => r.status === 202 });
 }
