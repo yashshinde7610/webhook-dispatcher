@@ -102,14 +102,13 @@
 
         const showReplay = job.status !== 'Pending' && job.status !== 'active';
         const replayBtn  = showReplay ? `
-            <button class="card-btn" onclick="replayJob('${job.id}')">
+            <button class="card-btn replay-btn" data-event-id="${job.id}">
                 <svg style="width:12px;height:12px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                           d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                 </svg>
                 Replay Job
             </button>` : '';
-
         card.className = `event-card ${cfg.cardClass}`;
         card.innerHTML = `
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -139,6 +138,17 @@
 
     // Backward-compat
     socket.on('job-update', window.renderJobUpdate);
+
+    // Event delegation for replay buttons (CSP-safe, no inline onclick)
+    eventsContainer.addEventListener('click', (e) => {
+        const btn = e.target.closest('.replay-btn');
+        if (btn) window.replayJob(btn.dataset.eventId);
+    });
+
+    // Attach Load Failed Events button listener (CSP-safe)
+    document.getElementById('load-failed-btn').addEventListener('click', () => {
+        window.loadFailedEvents();
+    });
 
     // Load historical failed/dead events from MongoDB
     window.loadFailedEvents = async function loadFailedEvents() {
