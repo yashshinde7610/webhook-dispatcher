@@ -343,20 +343,6 @@ All errors include a `traceId` for correlation:
 
 ---
 
-## Screenshots
-
-> **Add these screenshots to make the repo visually impressive:**
-
-| Screenshot | What to Capture |
-|------------|----------------|
-| `docs/dashboard-live.png` | Dashboard with live events streaming (mix of Completed/Failed/Dead) |
-| `docs/dashboard-metrics.png` | System overview metrics panel (Active Workers, Queue Backlog, DLQ, Redis) |
-| `docs/ai-suggest-fix.png` | AI modal analyzing a failed webhook with suggested payload fix |
-| `docs/ci-pipeline.png` | GitHub Actions workflow page showing green checkmarks |
-| `docs/terminal-tests.png` | Terminal output of the test suite with the ASCII scorecard |
-
----
-
 ## Security
 
 ### Implemented Protections
