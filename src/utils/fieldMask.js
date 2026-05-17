@@ -6,7 +6,9 @@
  */
 function applyFieldMask(data, maskString) {
     if (!maskString || maskString === '*') {
-        return {};
+        const err = new Error('updateMask is required and cannot be wildcard (*)');
+        err.code = 'INVALID_FIELD_MASK';
+        throw err;
     }
 
     const allowedFields = maskString.split(',').map(f => f.trim());

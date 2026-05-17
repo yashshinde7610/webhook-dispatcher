@@ -22,10 +22,10 @@ describe('Field Mask', () => {
         assert.strictEqual(result.password, undefined);
     });
 
-    test('should return empty object for wildcard or missing mask', () => {
-        assert.deepStrictEqual(applyFieldMask({ a: 1 }, '*'), {});
-        assert.deepStrictEqual(applyFieldMask({ a: 1 }, ''), {});
-        assert.deepStrictEqual(applyFieldMask({ a: 1 }, null), {});
+    test('should throw error for wildcard or missing mask', () => {
+        assert.throws(() => applyFieldMask({ a: 1 }, '*'), { code: 'INVALID_FIELD_MASK' });
+        assert.throws(() => applyFieldMask({ a: 1 }, ''), { code: 'INVALID_FIELD_MASK' });
+        assert.throws(() => applyFieldMask({ a: 1 }, null), { code: 'INVALID_FIELD_MASK' });
     });
 
     test('should handle mask fields that dont exist in the data', () => {

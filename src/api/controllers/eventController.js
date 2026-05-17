@@ -313,6 +313,13 @@ exports.patchEvent = async (req, res) => {
         res.json({ message: 'Event updated successfully', updatedFields: Object.keys(safeUpdates) });
 
     } catch (error) {
+        if (error.code === 'INVALID_FIELD_MASK') {
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: error.message,
+                code: error.code
+            });
+        }
         res.status(500).json({ error: error.message });
     }
 };

@@ -338,14 +338,14 @@ async function runUnitTests() {
         assert.strictEqual(result.$set, undefined);
     });
 
-    await unitTest('Wildcard "*" mask → empty object (fail-safe)', () => {
-        assert.deepStrictEqual(applyFieldMask({ a: 1, b: 2 }, '*'), {});
+    await unitTest('Wildcard "*" mask → throws error (fail-safe)', () => {
+        assert.throws(() => applyFieldMask({ a: 1, b: 2 }, '*'), { code: 'INVALID_FIELD_MASK' });
     });
 
-    await unitTest('Empty / null / undefined mask → empty object', () => {
-        assert.deepStrictEqual(applyFieldMask({ a: 1 }, ''), {});
-        assert.deepStrictEqual(applyFieldMask({ a: 1 }, null), {});
-        assert.deepStrictEqual(applyFieldMask({ a: 1 }, undefined), {});
+    await unitTest('Empty / null / undefined mask → throws error', () => {
+        assert.throws(() => applyFieldMask({ a: 1 }, ''), { code: 'INVALID_FIELD_MASK' });
+        assert.throws(() => applyFieldMask({ a: 1 }, null), { code: 'INVALID_FIELD_MASK' });
+        assert.throws(() => applyFieldMask({ a: 1 }, undefined), { code: 'INVALID_FIELD_MASK' });
     });
 
     await unitTest('Mask field not present in data → ignored safely', () => {

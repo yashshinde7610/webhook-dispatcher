@@ -25,7 +25,7 @@ async function addToQueue(data) {
         // persistState (Mongo write) and BullMQ's completion ack, the job
         // is still recoverable from Redis for inspection.
         removeOnComplete: { count: 200 },
-        removeOnFail: false
+        removeOnFail: { count: 500 }
     });
 }
 

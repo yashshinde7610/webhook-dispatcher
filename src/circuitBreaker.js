@@ -81,6 +81,7 @@ async function recordFailure(url) {
 
     if (result === 'TRIPPED') {
         logger.warn({ url }, 'Circuit breaker tripped');
+        await redis.del(`circuit_probe:${host}`);
     }
 }
 
