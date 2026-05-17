@@ -42,6 +42,15 @@
         connStatus.innerHTML = '<span class="offline-dot"></span><span class="ml-1.5">Disconnected</span>';
     });
 
+    socket.on('connect_error', (err) => {
+        console.error('Socket connection error:', err.message);
+        connStatus.innerHTML = '<span class="offline-dot" style="background:#f43f5e;"></span><span class="ml-1.5 text-rose-500">Auth Failed</span>';
+        if (err.message.includes('Authentication')) {
+            alert('Invalid dashboard token. Please refresh and try again.');
+            localStorage.removeItem('dashboardToken');
+        }
+    });
+
     // Metrics
     socket.on('dashboard-stats', (stats) => {
         document.getElementById('count-active').innerText  = stats.active;

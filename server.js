@@ -35,7 +35,7 @@ const server = http.createServer(app);
 // ── Socket.IO: restrict CORS in production ──
 const io = new Server(server, {
     cors: {
-        origin: process.env.DASHBOARD_ORIGIN || false,
+        origin: process.env.DASHBOARD_ORIGIN || '*',
     }
 });
 
@@ -54,7 +54,18 @@ io.use((socket, next) => {
 });
 
 // ── Express middleware ──
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            connectSrc: ["'self'", "ws:", "wss:"],
+            imgSrc: ["'self'", "data:"]
+        }
+    }
+}));
 app.use(express.json({
     limit: '1mb',
     verify: (req, _res, buf) => { req.rawBody = buf; }
