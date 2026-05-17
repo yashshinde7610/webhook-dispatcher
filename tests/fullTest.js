@@ -690,13 +690,13 @@ async function runE2ETests() {
             assert.strictEqual(res.status, 400);
         });
 
-        await e2eTest('PATCH with updateMask=status → 200 (updates status)', async () => {
+        await e2eTest('PATCH with updateMask=payload → 200 (updates payload)', async () => {
             const res = await api.patch(
-                `/api/events/${primaryEventId}?updateMask=status`,
-                { status: 'FAILED' }
+                `/api/events/${primaryEventId}?updateMask=payload`,
+                { payload: { updated: true } }
             );
             assert.strictEqual(res.status, 200);
-            assert.ok(res.data.updatedFields.includes('status'));
+            assert.ok(res.data.updatedFields.includes('payload'));
         });
 
         await e2eTest('PATCH with updateMask=url → 200 (updates url)', async () => {
@@ -710,11 +710,11 @@ async function runE2ETests() {
 
         await e2eTest('PATCH unknown fields stripped by Joi (NoSQL injection guard)', async () => {
             const res = await api.patch(
-                `/api/events/${primaryEventId}?updateMask=status`,
-                { status: 'PENDING', $set: { admin: true }, __proto__: { evil: true } }
+                `/api/events/${primaryEventId}?updateMask=url`,
+                { url: 'http://updated.example.com', $set: { admin: true }, __proto__: { evil: true } }
             );
             // Joi strips unknown fields, so the PATCH should still succeed
-            // but only update "status"
+            // but only update "url"
             if (res.status === 200) {
                 assert.ok(!res.data.updatedFields.includes('$set'));
             }
@@ -722,8 +722,8 @@ async function runE2ETests() {
 
         await e2eTest('PATCH nonexistent event → 404', async () => {
             const res = await api.patch(
-                '/api/events/000000000000000000000000?updateMask=status',
-                { status: 'FAILED' }
+                '/api/events/000000000000000000000000?updateMask=url',
+                { url: 'http://updated.example.com' }
             );
             assert.strictEqual(res.status, 404);
         });
@@ -732,11 +732,6 @@ async function runE2ETests() {
     subsection('2.8  Replay');
 
     if (primaryEventId) {
-        // First reset status to allow replay
-        await api.patch(`/api/events/${primaryEventId}?updateMask=status`, {
-            status: 'FAILED'
-        });
-
         await e2eTest('POST /api/events/:id/replay → 200 "Replay started"', async () => {
             const res = await api.post(`/api/events/${primaryEventId}/replay`);
             assert.strictEqual(res.status, 200);
