@@ -31,6 +31,9 @@ const EventSchema = new mongoose.Schema({
         index: { unique: true, sparse: true }
     },
 
+    // TODO: PROCESSING is never set — the worker skips it to reduce
+    // per-job Mongo writes (BullMQ tracks in-flight state in Redis).
+    // Remove from enum if this optimization is permanent.
     status: {
         type: String,
         enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'FAILED_PERMANENT', 'DEAD'],

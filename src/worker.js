@@ -103,6 +103,9 @@ async function assertNotPrivate(hostname) {
 }
 
 // ── MongoDB connection ───────────────────────────────────────
+// Worker default is higher than the API server (20, see src/db.js)
+// because BullMQ runs 50 concurrent jobs — each may need a Mongo
+// connection for state persistence. 55 = 50 jobs + 5 headroom.
 const MONGO_POOL_SIZE = Number(process.env.MONGO_POOL_SIZE) || 55;
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db', {
     maxPoolSize: MONGO_POOL_SIZE,

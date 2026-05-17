@@ -11,6 +11,13 @@ const { redact, redactPayloadString } = require('../../utils/redact');
 const { applyFieldMask } = require('../../utils/fieldMask');
 const { addToQueue, myQueue } = require('../../queue');
 
+// Safe accessor for the WebSocket broadcast function injected by server.js
+// via app.locals. Returns a no-op if not set (e.g. in test contexts).
+const noop = () => {};
+function getEnqueueFn(req) {
+    return req.app?.locals?.enqueueJobUpdate || noop;
+}
+
 // Validation schemas
 const eventSchema = Joi.object({
     url: Joi.string().uri({ scheme: ['http', 'https'] }).required()
@@ -33,7 +40,7 @@ const patchSchema = Joi.object({
 // Idempotency is enforced via a unique sparse MongoDB index on
 // idempotencyKey — E11000 on collision gives atomic dedup.
 exports.ingestEvent = async (req, res) => {
-    const enqueueJobUpdate = req.app.locals.enqueueJobUpdate;
+    const enqueueJobUpdate = getEnqueueFn(req);
     const traceId = crypto.randomUUID();
 
     if (redis.status !== 'ready') {
@@ -149,6 +156,7 @@ exports.ingestEvent = async (req, res) => {
             dbId: generatedDbId,
             traceId,
             source: 'API_KEY_USER',
+            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
         });
 
         enqueueJobUpdate({ id: generatedDbId, status: 'Pending', data: redact(jobData), traceId });
@@ -186,7 +194,7 @@ exports.ingestEvent = async (req, res) => {
 
 // ── Replay (POST /api/events/:id/replay) ──
 exports.replayEvent = async (req, res) => {
-    const enqueueJobUpdate = req.app.locals.enqueueJobUpdate;
+    const enqueueJobUpdate = getEnqueueFn(req);
 
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -254,7 +262,7 @@ exports.replayEvent = async (req, res) => {
 
 // ── Patch (PATCH /api/events/:id) ──
 exports.patchEvent = async (req, res) => {
-    const enqueueJobUpdate = req.app.locals.enqueueJobUpdate;
+    const enqueueJobUpdate = getEnqueueFn(req);
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
