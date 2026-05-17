@@ -1,5 +1,4 @@
 // src/queue.js
-require('dotenv').config();
 const { Queue } = require('bullmq');
 
 // BullMQ uses blocking commands (BLMOVE), so it needs its own connection

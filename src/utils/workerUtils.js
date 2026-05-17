@@ -36,6 +36,11 @@ function createHmacSignature(payloadString, secret) {
  */
 function classifyError(error) {
     if (error.message === 'Circuit Breaker Open') return 'TRANSIENT';
+
+    // DNS failures are permanent — the domain doesn't exist.
+    // Retrying with backoff just wastes BullMQ attempts.
+    if (error.code === 'ENOTFOUND' || error.code === 'EAI_AGAIN') return 'PERMANENT';
+
     if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT'|| error.code === 'ECONNREFUSED') return 'TRANSIENT';
 
     if (error.response) {

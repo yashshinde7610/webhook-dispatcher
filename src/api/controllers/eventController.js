@@ -3,7 +3,6 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Joi = require('joi');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const Event = require('../../models/Event');
 const redis = require('../../redis');
@@ -20,11 +19,13 @@ const eventSchema = Joi.object({
         .messages({ 'any.required': 'payload is required and must be a JSON object' })
 }).options({ allowUnknown: true });
 
+// PATCH schema — status and failureType are intentionally excluded.
+// These fields are owned by the worker lifecycle; letting external callers
+// set them directly causes MongoDB ↔ BullMQ desync (e.g. marking a
+// PENDING job as COMPLETED while BullMQ still has it in-flight).
 const patchSchema = Joi.object({
-    status: Joi.string().valid('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'FAILED_PERMANENT', 'DEAD'),
     url: Joi.string().uri({ scheme: ['http', 'https'] }),
     payload: Joi.object(),
-    failureType: Joi.string().valid('TRANSIENT', 'PERMANENT').allow(null),
     lastError: Joi.string().allow(null, ''),
 }).options({ stripUnknown: true });
 
@@ -133,7 +134,7 @@ exports.ingestEvent = async (req, res) => {
             payload: payloadString,
             url: jobData.url,
             ...(idempotencyKey ? { idempotencyKey } : {}),
-            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
+            // deliverySemantics uses schema default ('AT_LEAST_ONCE_UNORDERED')
             status: 'PENDING',
             logs: [{ attempt: 0, status: 0, response: 'Ingested', timestamp: new Date() }]
         });
@@ -148,7 +149,6 @@ exports.ingestEvent = async (req, res) => {
             dbId: generatedDbId,
             traceId,
             source: 'API_KEY_USER',
-            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED'
         });
 
         enqueueJobUpdate({ id: generatedDbId, status: 'Pending', data: redact(jobData), traceId });
@@ -256,6 +256,11 @@ exports.replayEvent = async (req, res) => {
 exports.patchEvent = async (req, res) => {
     const enqueueJobUpdate = req.app.locals.enqueueJobUpdate;
     const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ error: 'Invalid event ID format', code: 'INVALID_ID' });
+    }
+
     const updateMask = req.query.updateMask || req.headers['x-update-mask'];
     const updateData = req.body;
 
@@ -293,7 +298,7 @@ exports.patchEvent = async (req, res) => {
 
         enqueueJobUpdate({
             id: id,
-            status: safeUpdates.status || 'Updated',
+            status: 'Updated',
             response: `Patched fields: ${Object.keys(safeUpdates).join(', ')}`
         });
 
@@ -301,140 +306,6 @@ exports.patchEvent = async (req, res) => {
 
     } catch (error) {
         res.status(500).json({ error: error.message });
-    }
-};
-
-// ── AI Suggest-Fix (POST /api/events/:id/suggest-fix) ──
-// Human-in-the-loop DLQ recovery: asks Gemini to analyze failed
-// webhook payloads and suggest a corrected version.
-exports.suggestFix = async (req, res) => {
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (!geminiKey) {
-        return res.status(501).json({
-            error: 'AI suggestions are not configured',
-            message: 'Set GEMINI_API_KEY in your environment to enable this feature.',
-            code: 'GEMINI_NOT_CONFIGURED'
-        });
-    }
-
-    try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-            return res.status(400).json({ error: 'Invalid event ID format', code: 'INVALID_ID' });
-        }
-
-        const event = await Event.findById(req.params.id).lean();
-        if (!event) return res.status(404).json({ error: 'Event not found', code: 'NOT_FOUND' });
-
-        const failedStatuses = ['FAILED', 'FAILED_PERMANENT', 'DEAD'];
-        if (!failedStatuses.includes(event.status)) {
-            return res.status(400).json({
-                error: 'Event is not in a failed state',
-                message: `Current status: ${event.status}. AI suggestions are only available for failed webhooks.`,
-                code: 'NOT_FAILED'
-            });
-        }
-
-        let parsedPayload;
-        try { parsedPayload = JSON.parse(event.payload); } catch { parsedPayload = event.payload; }
-
-        const lastLogs = (event.logs || []).slice(-5).map(l => ({
-            attempt: l.attempt,
-            status: l.status,
-            response: l.response,
-            timestamp: l.timestamp
-        }));
-
-        const prompt = `You are a webhook delivery debugging assistant. A webhook delivery has failed.
-
-TARGET URL: ${event.url}
-STATUS: ${event.status}
-FAILURE TYPE: ${event.failureType || 'Unknown'}
-LAST ERROR: ${event.lastError || 'None'}
-HTTP STATUS CODE: ${event.finalHttpStatus || 'N/A'}
-ERROR CODE: ${event.errorCode || 'N/A'}
-ATTEMPT COUNT: ${event.attemptCount || 0}
-
-ORIGINAL PAYLOAD (JSON):
-${JSON.stringify(parsedPayload, null, 2)}
-
-RECENT DELIVERY LOGS:
-${JSON.stringify(lastLogs, null, 2)}
-
-TASK: Analyze the failure and suggest a FIXED JSON payload that is more likely to succeed on retry.
-
-RULES:
-1. Return ONLY a valid JSON object with keys: "analysis", "suggestion", "fixedPayload", "confidence"
-2. confidence must be "high", "medium", or "low"
-3. If the error is infrastructure-related and the payload looks correct, return the original payload unchanged with confidence "low"
-4. Do NOT invent fields that weren't in the original payload
-5. Keep the fixedPayload structure identical to the original`;
-
-        const genAI = new GoogleGenerativeAI(geminiKey);
-        const primaryModel = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-        const fallbackModel = 'gemini-2.0-flash-lite';
-
-        let responseText;
-        try {
-            const model = genAI.getGenerativeModel({ model: primaryModel });
-            const result = await model.generateContent(prompt);
-            responseText = result.response.text();
-        } catch (primaryErr) {
-            if (primaryErr.message && primaryErr.message.includes('429') && primaryModel !== fallbackModel) {
-                logger.warn({ eventId: req.params.id }, 'Primary model rate-limited, trying fallback');
-                try {
-                    const fbModel = genAI.getGenerativeModel({ model: fallbackModel });
-                    const fbResult = await fbModel.generateContent(prompt);
-                    responseText = fbResult.response.text();
-                } catch (fbErr) {
-                    const isQuota = fbErr.message && (fbErr.message.includes('429') || fbErr.message.includes('quota'));
-                    return res.status(isQuota ? 429 : 502).json({
-                        error: 'AI service temporarily unavailable',
-                        message: isQuota ? 'Gemini API quota exceeded.' : fbErr.message,
-                        code: isQuota ? 'QUOTA_EXCEEDED' : 'AI_ERROR'
-                    });
-                }
-            } else {
-                const isQuota = primaryErr.message && (primaryErr.message.includes('429') || primaryErr.message.includes('quota'));
-                return res.status(isQuota ? 429 : 502).json({
-                    error: isQuota ? 'AI service temporarily unavailable' : 'AI request failed',
-                    message: isQuota ? 'Gemini API quota exceeded.' : primaryErr.message,
-                    code: isQuota ? 'QUOTA_EXCEEDED' : 'AI_ERROR'
-                });
-            }
-        }
-
-        let aiResponse;
-        try {
-            const cleaned = responseText
-                .replace(/^```(?:json)?\s*/i, '')
-                .replace(/\s*```\s*$/i, '')
-                .trim();
-            aiResponse = JSON.parse(cleaned);
-        } catch (parseErr) {
-            logger.warn({ eventId: req.params.id, raw: responseText.slice(0, 500) }, 'Gemini returned unparseable response');
-            return res.status(502).json({
-                error: 'AI returned an invalid response',
-                message: 'The model response could not be parsed as JSON. Try again.',
-                code: 'AI_PARSE_ERROR',
-                raw: responseText.slice(0, 1000)
-            });
-        }
-
-        logger.info({ eventId: req.params.id, confidence: aiResponse.confidence }, 'AI suggestion generated');
-
-        res.json({
-            eventId: event._id,
-            currentStatus: event.status,
-            analysis: aiResponse.analysis || 'No analysis provided',
-            suggestion: aiResponse.suggestion || 'No suggestion provided',
-            fixedPayload: aiResponse.fixedPayload || parsedPayload,
-            confidence: aiResponse.confidence || 'low',
-            originalPayload: parsedPayload
-        });
-
-    } catch (error) {
-        logger.error({ eventId: req.params.id, err: error.message }, 'AI suggest-fix failed');
-        res.status(500).json({ error: 'AI suggestion failed', message: error.message });
     }
 };
 
@@ -468,6 +339,10 @@ exports.getEvents = async (req, res) => {
 // ── Get single event (GET /api/events/:id) ──
 exports.getEventById = async (req, res) => {
     try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ error: 'Invalid event ID format', code: 'INVALID_ID' });
+        }
+
         const event = await Event.findById(req.params.id).lean();
         if (!event) return res.status(404).json({ error: 'Event not found' });
 
@@ -483,6 +358,10 @@ exports.getEventById = async (req, res) => {
 // ── Delete event (DELETE /api/events/:id) ──
 exports.deleteEvent = async (req, res) => {
     try {
+        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+            return res.status(400).json({ error: 'Invalid event ID format', code: 'INVALID_ID' });
+        }
+
         const result = await Event.findByIdAndDelete(req.params.id);
         if (!result) return res.status(404).json({ error: 'Event not found' });
         res.json({ message: 'Event deleted', id: req.params.id });

@@ -1,7 +1,7 @@
 {
   "name": "webhook-dispatcher",
   "version": "1.0.0",
-  "description": "",
+  "description": "Production-grade webhook delivery system with retry, circuit breaking, and SSRF protection",
   "main": "server.js",
   "scripts": {
     "test": "node --test tests/*.test.js",
@@ -10,23 +10,19 @@
     "test:e2e": "node tests/fullTest.js --e2e-only"
   },
   "keywords": [],
-  "author": "",
+  "author": "Yash Shinde",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "@socket.io/redis-adapter": "^8.3.0",
     "axios": "^1.13.2",
     "bullmq": "^5.66.2",
-    "chalk": "^4.1.2",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
-    "figlet": "^1.9.4",
+    "helmet": "^8.1.0",
     "ioredis": "^5.8.2",
     "joi": "^18.0.2",
-    "json-stable-stringify": "^1.3.0",
-    "minimist": "^1.2.8",
     "mongoose": "^9.0.2",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
@@ -34,6 +30,8 @@
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
+    "chalk": "^4.1.2",
+    "minimist": "^1.2.8",
     "nodemon": "^3.1.11"
   }
 }

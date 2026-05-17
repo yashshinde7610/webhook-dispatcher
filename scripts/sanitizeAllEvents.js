@@ -1,5 +1,9 @@
 // scripts/sanitizeAllEvents.js
 //
+// One-off data migration script — NOT production code.
+// Requires `npm install` (not `npm ci --omit=dev`) since minimist
+// is a devDependency.
+//
 // Usage:
 //   # Dry-run (default) — shows counts and example changes, does NOT write
 //   node scripts/sanitizeAllEvents.js

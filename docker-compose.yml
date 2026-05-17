@@ -28,7 +28,7 @@ services:
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
       - API_KEY=${API_KEY}
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DASHBOARD_ORIGIN=${DASHBOARD_ORIGIN}
     depends_on:
       - mongo
       - redis

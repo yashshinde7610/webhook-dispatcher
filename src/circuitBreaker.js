@@ -6,6 +6,7 @@
 // all happen atomically — no race conditions under high concurrency.
 //
 const redis = require('./redis');
+const logger = require('./utils/logger');
 
 function extractHost(url) {
     try { return new URL(url).hostname; } catch { return url; }
@@ -79,7 +80,7 @@ async function recordFailure(url) {
     );
 
     if (result === 'TRIPPED') {
-        console.warn(`Circuit breaker tripped for: ${url}`);
+        logger.warn({ url }, 'Circuit breaker tripped');
     }
 }
 

@@ -20,7 +20,6 @@
 
         @keyframes fadeIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
         @keyframes ripple{0%{transform:scale(1);opacity:0.6;}100%{transform:scale(2.6);opacity:0;}}
-        @keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
         @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 
         .page-bg{background-color:#09090b;background-image:radial-gradient(ellipse 60% 25% at 50% 0%,rgba(99,102,241,0.07) 0%,transparent 70%);}
@@ -58,34 +57,9 @@
         .card-btn:active{transform:scale(0.99);}
         .card-btn:disabled{opacity:0.5;cursor:not-allowed;pointer-events:none;}
 
-        .ai-btn{background:linear-gradient(135deg,#1e1b4b 0%,#172554 100%);border-color:#312e81;color:#a5b4fc;}
-        .ai-btn:hover{border-color:#4338ca;color:#c7d2fe;background:linear-gradient(135deg,#272366 0%,#1e3a5f 100%);}
-
         .section-label{font-size:0.7rem;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#52525b;}
         .divider{height:1px;background:#141416;}
         .stat-num{font-size:2.4rem;font-weight:700;line-height:1;letter-spacing:-0.03em;}
-
-        /* AI Modal */
-        .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);z-index:100;display:flex;align-items:center;justify-content:center;animation:fadeIn 0.15s ease;}
-        .modal-panel{background:#111113;border:1px solid #1e1e21;border-radius:14px;width:95%;max-width:640px;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;animation:fadeIn 0.2s ease;}
-        .modal-header{padding:18px 22px;border-bottom:1px solid #1e1e21;display:flex;align-items:center;justify-content:space-between;}
-        .modal-body{padding:22px;overflow-y:auto;flex:1;}
-        .modal-footer{padding:14px 22px;border-top:1px solid #1e1e21;display:flex;gap:8px;justify-content:flex-end;}
-
-        .ai-editor{font-family:'JetBrains Mono',monospace;font-size:0.75rem;line-height:1.7;background:#0c0c0e;border:1px solid #27272a;border-radius:8px;padding:14px;color:#86efac;width:100%;min-height:160px;resize:vertical;outline:none;transition:border-color 0.15s;}
-        .ai-editor:focus{border-color:#4338ca;}
-
-        .confidence-high{color:#4ade80;} .confidence-medium{color:#fbbf24;} .confidence-low{color:#fb7185;}
-
-        .shimmer-bar{height:12px;border-radius:6px;background:linear-gradient(90deg,#1e1e21 25%,#27272a 50%,#1e1e21 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;}
-
-        .apply-btn{padding:8px 16px;border-radius:7px;background:#4f46e5;border:1px solid #6366f1;color:#e0e7ff;font-size:0.78rem;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;transition:background 0.15s,transform 0.1s;font-family:'Inter',sans-serif;}
-        .apply-btn:hover{background:#4338ca;}
-        .apply-btn:active{transform:scale(0.98);}
-        .apply-btn:disabled{opacity:0.5;cursor:not-allowed;}
-
-        .cancel-btn{padding:8px 16px;border-radius:7px;background:#18181b;border:1px solid #27272a;color:#a1a1aa;font-size:0.78rem;font-weight:500;cursor:pointer;transition:background 0.15s;font-family:'Inter',sans-serif;}
-        .cancel-btn:hover{background:#1c1c1f;border-color:#3f3f46;color:#e4e4e7;}
 
         .spinner{display:inline-block;width:14px;height:14px;border:2px solid #3f3f46;border-top-color:#a5b4fc;border-radius:50%;animation:spin 0.6s linear infinite;}
     </style>
@@ -207,73 +181,6 @@
 
 </main>
 
-<!-- AI SUGGEST-FIX MODAL (hidden by default) -->
-<div id="ai-modal" class="modal-backdrop" style="display:none;" onclick="if(event.target===this)closeAiModal()">
-    <div class="modal-panel">
-        <div class="modal-header">
-            <div style="display:flex;align-items:center;gap:10px;">
-                <div style="width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;">
-                    <svg style="width:14px;height:14px;color:white;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-                    </svg>
-                </div>
-                <div>
-                    <p style="font-size:0.88rem;font-weight:600;color:#e4e4e7;">AI Payload Suggestion</p>
-                    <p id="ai-modal-subtitle" style="font-size:0.7rem;color:#52525b;margin-top:2px;">Analyzing failure...</p>
-                </div>
-            </div>
-            <button onclick="closeAiModal()" style="background:none;border:none;color:#52525b;cursor:pointer;padding:4px;" title="Close">
-                <svg style="width:18px;height:18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
-            </button>
-        </div>
-
-        <div class="modal-body" id="ai-modal-body">
-            <!-- Skeleton loading state -->
-            <div id="ai-loading">
-                <p style="font-size:0.78rem;color:#a1a1aa;margin-bottom:16px;display:flex;align-items:center;gap:8px;">
-                    <span class="spinner"></span>
-                    Querying Gemini for a suggested fix...
-                </p>
-                <div style="display:flex;flex-direction:column;gap:10px;">
-                    <div class="shimmer-bar" style="width:85%;"></div>
-                    <div class="shimmer-bar" style="width:60%;"></div>
-                    <div class="shimmer-bar" style="width:70%;height:80px;"></div>
-                </div>
-            </div>
-
-            <!-- Result (filled by JS) -->
-            <div id="ai-result" style="display:none;">
-                <div id="ai-analysis-box" style="background:#141416;border:1px solid #1e1e21;border-radius:8px;padding:14px;margin-bottom:16px;">
-                    <p style="font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#52525b;margin-bottom:6px;">Analysis</p>
-                    <p id="ai-analysis-text" style="font-size:0.8rem;color:#d4d4d8;line-height:1.6;"></p>
-                </div>
-
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                    <p style="font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#52525b;">Suggested Fix</p>
-                    <span id="ai-confidence-badge" class="badge" style="font-size:0.62rem;"></span>
-                </div>
-                <p id="ai-suggestion-text" style="font-size:0.76rem;color:#a1a1aa;margin-bottom:10px;line-height:1.5;"></p>
-
-                <p style="font-size:0.68rem;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#52525b;margin-bottom:6px;">Editable Payload</p>
-                <textarea id="ai-payload-editor" class="ai-editor" spellcheck="false"></textarea>
-                <p style="font-size:0.66rem;color:#3f3f46;margin-top:6px;">Review and edit the payload above before applying. This will PATCH the event and replay it.</p>
-            </div>
-        </div>
-
-        <div class="modal-footer" id="ai-modal-footer" style="display:none;">
-            <button class="cancel-btn" onclick="closeAiModal()">Cancel</button>
-            <button class="apply-btn" id="ai-apply-btn" onclick="applyAiFix()">
-                <svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
-                </svg>
-                Apply &amp; Replay
-            </button>
-        </div>
-    </div>
-</div>
-
 <script>
     // XSS protection
     const escapeHTML = (str) => String(str).replace(/[&<>'"]/g,
@@ -345,12 +252,6 @@
         return { cardClass: 'card-default', badgeClass: 'badge badge-default' };
     }
 
-    // Determine if a status qualifies for AI suggest-fix
-    function isFailedStatus(status) {
-        const s = status?.toLowerCase?.() || '';
-        return s.includes('failed') || s.includes('dead') || s.includes('aborted') || s.includes('permanent');
-    }
-
     // Render a job card
     function renderJobUpdate(job) {
         if (emptyState && emptyState.parentNode) emptyState.remove();
@@ -384,15 +285,6 @@
                 Replay Job
             </button>` : '';
 
-        const aiBtn = isFailedStatus(job.status) ? `
-            <button class="card-btn ai-btn" onclick="suggestFix('${job.id}')">
-                <svg style="width:12px;height:12px;flex-shrink:0;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                          d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-                </svg>
-                Suggest Fix with AI
-            </button>` : '';
-
         card.className = `event-card ${cfg.cardClass}`;
         card.innerHTML = `
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -408,7 +300,6 @@
             <p style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#3f3f46;margin-top:6px;">${time}</p>
             <pre class="json-block">${escapeHTML(dataPreview || 'Processing...')}</pre>
             ${replayBtn}
-            ${aiBtn}
         `;
     }
 
@@ -468,7 +359,7 @@
             const apiKey = getApiKey();
             if (!apiKey) return;
 
-            const btn = document.querySelector(`#card-${id} .card-btn:not(.ai-btn)`);
+            const btn = document.querySelector(`#card-${id} .card-btn`);
             if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Queuing...'; }
 
             const res  = await fetch(`/api/events/${id}/replay`, {
@@ -479,155 +370,6 @@
             if (!res.ok) alert('Error: ' + data.error);
         } catch (err) {
             alert('Failed to replay: ' + err.message);
-        }
-    }
-
-    // =============================================
-    // AI SUGGEST-FIX FLOW (Human-in-the-Loop)
-    // =============================================
-    let currentAiEventId = null;
-
-    function closeAiModal() {
-        document.getElementById('ai-modal').style.display = 'none';
-        currentAiEventId = null;
-    }
-
-    async function suggestFix(eventId) {
-        const apiKey = getApiKey();
-        if (!apiKey) return;
-
-        currentAiEventId = eventId;
-
-        // Show modal in loading state
-        const modal = document.getElementById('ai-modal');
-        modal.style.display = 'flex';
-        document.getElementById('ai-loading').style.display = 'block';
-        document.getElementById('ai-result').style.display = 'none';
-        document.getElementById('ai-modal-footer').style.display = 'none';
-        document.getElementById('ai-modal-subtitle').textContent = `Event ...${eventId.slice(-8)} - Analyzing failure...`;
-
-        try {
-            const res = await fetch(`/api/events/${eventId}/suggest-fix`, {
-                method: 'POST',
-                headers: { 'x-api-key': apiKey }
-            });
-            const data = await res.json();
-
-            if (!res.ok) {
-                document.getElementById('ai-loading').style.display = 'none';
-                document.getElementById('ai-result').style.display = 'block';
-                document.getElementById('ai-confidence-badge').style.display = 'none';
-                document.getElementById('ai-payload-editor').value = '';
-                document.getElementById('ai-modal-footer').style.display = 'none';
-
-                // Context-specific error messages
-                let title = 'Error';
-                let analysis = data.message || data.error || 'Request failed';
-                let suggestion = '';
-
-                if (data.code === 'QUOTA_EXCEEDED' || res.status === 429) {
-                    title = 'Quota Exceeded';
-                    analysis = 'Your Gemini API free tier quota has been exhausted for today.';
-                    suggestion = 'Wait for the daily quota to reset (midnight PT), or add billing at aistudio.google.com to increase your limits.';
-                } else if (data.code === 'INVALID_ID' || res.status === 400) {
-                    title = 'Invalid Event';
-                    analysis = data.message || 'This event ID is not valid or the event is not in a failed state.';
-                    suggestion = 'Try refreshing the dashboard to get the latest events.';
-                } else if (data.code === 'NOT_FOUND' || res.status === 404) {
-                    title = 'Event Not Found';
-                    analysis = 'This event may have been deleted or expired (events auto-purge after 30 days).';
-                    suggestion = 'Refresh the dashboard to see current events.';
-                } else if (data.code === 'GEMINI_NOT_CONFIGURED') {
-                    title = 'AI Not Configured';
-                    analysis = 'The server does not have a Gemini API key set.';
-                    suggestion = 'Add GEMINI_API_KEY to your .env file and restart the server.';
-                } else if (data.code === 'AI_PARSE_ERROR') {
-                    title = 'AI Response Error';
-                    analysis = 'Gemini returned a response that could not be parsed. This can happen occasionally.';
-                    suggestion = 'Try again — the model may return a valid response on retry.';
-                }
-
-                document.getElementById('ai-analysis-text').textContent = analysis;
-                document.getElementById('ai-suggestion-text').textContent = suggestion;
-                document.getElementById('ai-modal-subtitle').textContent = title;
-                return;
-            }
-
-            // Populate result
-            document.getElementById('ai-loading').style.display = 'none';
-            document.getElementById('ai-result').style.display = 'block';
-            document.getElementById('ai-modal-footer').style.display = 'flex';
-
-            document.getElementById('ai-analysis-text').textContent = data.analysis;
-            document.getElementById('ai-suggestion-text').textContent = data.suggestion;
-            document.getElementById('ai-payload-editor').value = JSON.stringify(data.fixedPayload, null, 2);
-            document.getElementById('ai-modal-subtitle').textContent = `Event ...${eventId.slice(-8)} - ${data.currentStatus}`;
-
-            const confBadge = document.getElementById('ai-confidence-badge');
-            confBadge.style.display = 'inline-flex';
-            confBadge.textContent = `${data.confidence} confidence`;
-            confBadge.className = `badge confidence-${data.confidence}`;
-            if (data.confidence === 'high')   confBadge.style.cssText = 'background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.25);color:#4ade80;font-size:0.62rem;';
-            if (data.confidence === 'medium') confBadge.style.cssText = 'background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.25);color:#fbbf24;font-size:0.62rem;';
-            if (data.confidence === 'low')    confBadge.style.cssText = 'background:rgba(244,63,94,0.1);border-color:rgba(244,63,94,0.25);color:#fb7185;font-size:0.62rem;';
-
-        } catch (err) {
-            document.getElementById('ai-loading').style.display = 'none';
-            document.getElementById('ai-result').style.display = 'block';
-            document.getElementById('ai-analysis-text').textContent = 'Failed to reach the AI endpoint: ' + err.message;
-            document.getElementById('ai-suggestion-text').textContent = '';
-            document.getElementById('ai-payload-editor').value = '';
-        }
-    }
-
-    async function applyAiFix() {
-        if (!currentAiEventId) return;
-        const apiKey = getApiKey();
-        if (!apiKey) return;
-
-        const btn = document.getElementById('ai-apply-btn');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> Applying...';
-
-        let newPayload;
-        try {
-            newPayload = JSON.parse(document.getElementById('ai-payload-editor').value);
-        } catch (e) {
-            alert('Invalid JSON in the editor. Please fix the syntax and try again.');
-            btn.disabled = false;
-            btn.innerHTML = '<svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg> Apply &amp; Replay';
-            return;
-        }
-
-        try {
-            // Step 1: PATCH the event with the new payload + reset status
-            const patchRes = await fetch(`/api/events/${currentAiEventId}?updateMask=payload,status`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-                body: JSON.stringify({ payload: newPayload, status: 'PENDING' })
-            });
-            if (!patchRes.ok) {
-                const err = await patchRes.json();
-                throw new Error(err.error || err.message || 'PATCH failed');
-            }
-
-            // Step 2: Replay the event
-            const replayRes = await fetch(`/api/events/${currentAiEventId}/replay`, {
-                method: 'POST',
-                headers: { 'x-api-key': apiKey }
-            });
-            if (!replayRes.ok) {
-                const err = await replayRes.json();
-                throw new Error(err.error || err.message || 'Replay failed');
-            }
-
-            // Success - close modal
-            closeAiModal();
-
-        } catch (err) {
-            alert('Apply failed: ' + err.message);
-            btn.disabled = false;
-            btn.innerHTML = '<svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg> Apply &amp; Replay';
         }
     }
 </script>

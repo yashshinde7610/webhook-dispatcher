@@ -65,7 +65,9 @@ function isPrivateIP(ip) {
         const normalized = ip.toLowerCase();
         if (normalized === '::1') return true;
         if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-        if (normalized.startsWith('fe80')) return true;
+        // Link-local is fe80::/10 — covers fe80 through febf
+        const first16 = parseInt(normalized.slice(0, 4), 16);
+        if (!isNaN(first16) && (first16 & 0xffc0) === 0xfe80) return true;
         return false;
     }
 

@@ -1,6 +1,6 @@
 // src/redis.js
-require('dotenv').config();
 const Redis = require('ioredis');
+const logger = require('./utils/logger');
 
 const redis = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -9,11 +9,11 @@ const redis = new Redis({
 });
 
 redis.on('connect', () => {
-    console.log(`Redis connected at ${redis.options.host}:${redis.options.port}`);
+    logger.info({ host: redis.options.host, port: redis.options.port }, 'Redis connected');
 });
 
 redis.on('error', (err) => {
-    console.error('Redis connection error:', err.message);
+    logger.error({ err: err.message }, 'Redis connection error');
 });
 
 module.exports = redis;

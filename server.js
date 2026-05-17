@@ -1,13 +1,11 @@
 // server.js — API entry point
 // Sets up Express, Socket.IO, queue listeners, and mounts routes.
 // Business logic lives in src/api/controllers/.
-const connectDB = require('./src/db');
-connectDB();
 
-const redis = require('./src/redis');
-const logger = require('./src/utils/logger');
-const { redactPayloadString } = require('./src/utils/redact');
+// ── Load .env FIRST — before any module that reads process.env ──
 require('dotenv').config();
+
+const logger = require('./src/utils/logger');
 
 // Crash fast if critical env vars are missing
 const REQUIRED_ENV = ['API_KEY', 'DASHBOARD_TOKEN'];
@@ -18,6 +16,7 @@ if (missing.length > 0) {
 }
 
 const express = require('express');
+const helmet = require('helmet');
 const mongoose = require('mongoose');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -26,10 +25,19 @@ const { QueueEvents } = require('bullmq');
 const { startSweeper, stopSweeper } = require('./src/services/zombieSweeper');
 const { validateApiKey, safeCompare } = require('./src/api/middleware');
 const eventRoutes = require('./src/api/routes/eventRoutes');
+const connectDB = require('./src/db');
+const redis = require('./src/redis');
+const { redactPayloadString } = require('./src/utils/redact');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+
+// ── Socket.IO: restrict CORS in production ──
+const io = new Server(server, {
+    cors: {
+        origin: process.env.DASHBOARD_ORIGIN || false,
+    }
+});
 
 // ── Socket.IO: Redis adapter for multi-replica pub/sub ──
 const { createAdapter } = require('@socket.io/redis-adapter');
@@ -46,6 +54,7 @@ io.use((socket, next) => {
 });
 
 // ── Express middleware ──
+app.use(helmet());
 app.use(express.json({
     limit: '1mb',
     verify: (req, _res, buf) => { req.rawBody = buf; }
@@ -131,18 +140,25 @@ setInterval(async () => {
 }, 2000);
 
 // ── Start ──
+// Await MongoDB connection before binding the port.
+// If Mongo is unreachable, connectDB() calls process.exit(1).
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    logger.info({
-        port: PORT,
-        security: 'HMAC + API Key',
-        idempotency: 'MongoDB-Backed (unique index)',
-        webSocket: 'Redis-Adapted (multi-replica)',
-        rateLimitRpm: Number(process.env.RATE_LIMIT_RPM) || 1000,
-    }, 'Webhook API server ONLINE');
 
-    startSweeper();
-});
+(async () => {
+    await connectDB();
+
+    server.listen(PORT, () => {
+        logger.info({
+            port: PORT,
+            security: 'HMAC + API Key + Helmet',
+            idempotency: 'MongoDB-Backed (unique index)',
+            webSocket: 'Redis-Adapted (multi-replica)',
+            rateLimitRpm: Number(process.env.RATE_LIMIT_RPM) || 1000,
+        }, 'Webhook API server ONLINE');
+
+        startSweeper();
+    });
+})();
 
 // ── Graceful shutdown ──
 // Drain in-flight HTTP requests before closing DB connections,
