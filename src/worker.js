@@ -26,81 +26,12 @@ const bullmqConnectionOptions = {
 
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
 const { persistState } = require('./batchProcessor');
+const { assertNotPrivate } = require('./utils/ssrf');
+const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
 
-const dns = require('dns');
 const net = require('net');
 const http = require('http');
 const https = require('https');
-const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
-
-// ── SSRF Protection ──────────────────────────────────────────
-// We can't just regex the hostname — things like 127.0.0.1.nip.io,
-// octal IPs (0177.0.0.1), or DNS rebinding would bypass it.
-// Instead: resolve via DNS, then check the actual IP against
-// known private ranges.
-
-function isPrivateIP(ip) {
-    // Handle IPv4-mapped IPv6 like ::ffff:10.0.0.1
-    if (ip.startsWith('::ffff:')) {
-        ip = ip.slice(7);
-    }
-
-    if (net.isIPv4(ip)) {
-        const parts = ip.split('.').map(Number);
-        const [a, b] = parts;
-
-        if (a === 0)   return true;                          // current network
-        if (a === 10)  return true;                          // RFC-1918
-        if (a === 127) return true;                          // loopback
-        if (a === 169 && b === 254) return true;             // link-local
-        if (a === 172 && b >= 16 && b <= 31) return true;    // RFC-1918
-        if (a === 192 && b === 168) return true;             // RFC-1918
-        if (a === 100 && b >= 64 && b <= 127) return true;   // CGN / shared
-        if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
-
-        return false;
-    }
-
-    if (net.isIPv6(ip)) {
-        const normalized = ip.toLowerCase();
-        if (normalized === '::1') return true;
-        if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-        // Link-local is fe80::/10 — covers fe80 through febf
-        const first16 = parseInt(normalized.slice(0, 4), 16);
-        if (!isNaN(first16) && (first16 & 0xffc0) === 0xfe80) return true;
-        return false;
-    }
-
-    // Unknown format — block it (fail-closed)
-    return true;
-}
-
-/**
- * Resolve hostname via DNS and reject if the IP is private.
- * Returns the validated IP so we can pin Axios to it.
- */
-async function assertNotPrivate(hostname) {
-    if (net.isIP(hostname)) {
-        if (isPrivateIP(hostname)) {
-            throw Object.assign(
-                new Error(`SSRF Blocked: Target resolves to private IP: ${hostname}`),
-                { ssrfBlocked: true }
-            );
-        }
-        return hostname;
-    }
-
-    const { address } = await dns.promises.lookup(hostname);
-
-    if (isPrivateIP(address)) {
-        throw Object.assign(
-            new Error(`SSRF Blocked: ${hostname} resolved to private IP ${address}`),
-            { ssrfBlocked: true }
-        );
-    }
-
-    return address;
-}
 
 // ── MongoDB connection ───────────────────────────────────────
 // Worker default is higher than the API server (20, see src/db.js)

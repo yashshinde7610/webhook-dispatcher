@@ -11,6 +11,14 @@ describe('Error Classification', () => {
         assert.strictEqual(classifyError({ code: 'ECONNABORTED' }), 'TRANSIENT');
     });
 
+    test('ENOTFOUND (domain does not exist) is PERMANENT', () => {
+        assert.strictEqual(classifyError({ code: 'ENOTFOUND' }), 'PERMANENT');
+    });
+
+    test('EAI_AGAIN (DNS resolver temporarily unavailable) is TRANSIENT', () => {
+        assert.strictEqual(classifyError({ code: 'EAI_AGAIN' }), 'TRANSIENT');
+    });
+
     test('4xx client errors are PERMANENT (no point retrying)', () => {
         assert.strictEqual(classifyError({ response: { status: 400 } }), 'PERMANENT');
         assert.strictEqual(classifyError({ response: { status: 404 } }), 'PERMANENT');
@@ -44,6 +52,11 @@ describe('HTTP Status Sanitization', () => {
         assert.strictEqual(safeHttpStatus(''), null);
         assert.strictEqual(safeHttpStatus('not-a-number'), null);
         assert.strictEqual(safeHttpStatus(NaN), null);
+    });
+
+    test('edge cases: Infinity and boolean return null', () => {
+        assert.strictEqual(safeHttpStatus(Infinity), null);
+        assert.strictEqual(safeHttpStatus(true), null);
     });
 });
 
