@@ -16,7 +16,7 @@ router.delete('/:id',        operatorLimiter,  events.deleteEvent);
 router.get('/',       readLimiter, events.getEvents);
 router.get('/:id',    readLimiter, events.getEventById);
 
-// Patch (no rate limit — low risk, no BullMQ side-effects)
-router.patch('/:id',  events.patchEvent);
+// Patch (shares operator budget — prevents MongoDB connection pool exhaustion)
+router.patch('/:id',  operatorLimiter, events.patchEvent);
 
 module.exports = router;

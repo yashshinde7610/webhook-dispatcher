@@ -55,7 +55,16 @@ exports.ingestEvent = async (req, res) => {
 
     logger.info({ traceId }, 'Ingress: new request');
 
-    const { error: validationError } = eventSchema.validate(req.body);
+    const idempotencyKey = req.headers['idempotency-key'] || null;
+    const forceRetry = req.headers['x-force-retry'] === 'true';
+
+    // If forceRetry is true, url and payload are optional because we can reuse existing DB data
+    const schemaToUse = forceRetry ? Joi.object({
+        url: Joi.string().uri({ scheme: ['http', 'https'] }).messages({ 'string.uri': 'url must be a valid HTTP/HTTPS URL' }),
+        payload: Joi.object()
+    }).options({ allowUnknown: true }) : eventSchema;
+
+    const { error: validationError } = schemaToUse.validate(req.body);
     if (validationError) {
         logger.warn({ traceId, err: validationError.message }, 'Validation failed');
         return res.status(400).json({
@@ -66,8 +75,6 @@ exports.ingestEvent = async (req, res) => {
         });
     }
 
-    const idempotencyKey = req.headers['idempotency-key'] || null;
-    const forceRetry = req.headers['x-force-retry'] === 'true';
     const jobData = req.body;
 
     // Serialize payload once at the boundary — this string flows through
@@ -379,6 +386,16 @@ exports.deleteEvent = async (req, res) => {
 
         const result = await Event.findByIdAndDelete(req.params.id);
         if (!result) return res.status(404).json({ error: 'Event not found' });
+
+        // Remove from BullMQ if it's still pending/in-flight
+        // Without this, the worker would still deliver the webhook!
+        const existingJob = await myQueue.getJob(req.params.id);
+        if (existingJob) {
+            try { await existingJob.remove(); } catch (err) {
+                logger.warn({ jobId: req.params.id, err: err.message }, 'Could not remove BullMQ job during deletion');
+            }
+        }
+
         res.json({ message: 'Event deleted', id: req.params.id });
     } catch (error) {
         res.status(500).json({ error: error.message });
