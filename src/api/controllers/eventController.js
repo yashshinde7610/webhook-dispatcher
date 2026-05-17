@@ -248,7 +248,7 @@ exports.replayEvent = async (req, res) => {
             attempts: 5,
             backoff: { type: 'exponential', delay: 1000 },
             jobId: replayJobId,
-            removeOnComplete: true,
+            removeOnComplete: { count: 200 },
             removeOnFail: false
         });
 

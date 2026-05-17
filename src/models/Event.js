@@ -72,6 +72,10 @@ const EventSchema = new mongoose.Schema({
 const TTL_SECONDS = Number(process.env.EVENT_TTL_SECONDS) || 30 * 24 * 60 * 60;
 EventSchema.index({ createdAt: 1 }, { expireAfterSeconds: TTL_SECONDS });
 
+// Covers GET /api/events?status=X with .sort({ createdAt: -1 }).
+// Without this, every filtered list request triggers a collection scan.
+EventSchema.index({ status: 1, createdAt: -1 });
+
 EventSchema.statics.MAX_LOGS = 20;
 EventSchema.statics.TTL_SECONDS = TTL_SECONDS;
 

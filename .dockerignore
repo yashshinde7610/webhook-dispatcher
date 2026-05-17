@@ -1,0 +1,10 @@
+node_modules/
+.env
+.git/
+tests/
+docs/
+*.md
+.dockerignore
+.gitignore
+.github/
+scripts/

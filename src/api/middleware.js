@@ -57,5 +57,18 @@ const operatorLimiter = rateLimit({
     message: { error: 'Too Many Requests', code: 'OPERATOR_RATE_LIMITED' },
 });
 
-module.exports = { validateApiKey, ingestLimiter, operatorLimiter, safeCompare };
+// Read limiter for GET routes. These hit MongoDB with pagination
+// + countDocuments, so unlimited reads can exhaust the DB.
+const readLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.READ_RATE_LIMIT_RPM) || 200,
+    standardHeaders: true,
+    legacyHeaders: false,
+    store: new RedisStore({
+        sendCommand: (...args) => redis.call(...args),
+        prefix: 'rl:read:',
+    }),
+    message: { error: 'Too Many Requests', code: 'READ_RATE_LIMITED' },
+});
 
+module.exports = { validateApiKey, ingestLimiter, operatorLimiter, readLimiter, safeCompare };

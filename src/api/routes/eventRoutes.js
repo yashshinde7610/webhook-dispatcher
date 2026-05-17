@@ -3,16 +3,20 @@ const express = require('express');
 const router = express.Router();
 
 const events = require('../controllers/eventController');
-const { ingestLimiter, operatorLimiter } = require('../middleware');
+const { ingestLimiter, operatorLimiter, readLimiter } = require('../middleware');
 
-// POST routes
+// Ingest
 router.post('/',              ingestLimiter,    events.ingestEvent);
-router.post('/:id/replay',   operatorLimiter,  events.replayEvent);
 
-// Read + modify
-router.get('/',       events.getEvents);
-router.get('/:id',    events.getEventById);
+// Operator actions (stricter budget — each enqueues BullMQ work)
+router.post('/:id/replay',   operatorLimiter,  events.replayEvent);
+router.delete('/:id',        operatorLimiter,  events.deleteEvent);
+
+// Reads (pagination + countDocuments hit Mongo)
+router.get('/',       readLimiter, events.getEvents);
+router.get('/:id',    readLimiter, events.getEventById);
+
+// Patch (no rate limit — low risk, no BullMQ side-effects)
 router.patch('/:id',  events.patchEvent);
-router.delete('/:id', operatorLimiter, events.deleteEvent);
 
 module.exports = router;

@@ -20,7 +20,11 @@ async function addToQueue(data) {
         // Use the Mongo _id as the BullMQ job ID.
         // Deduplication is already handled at the API layer.
         jobId: data.dbId ? data.dbId.toString() : undefined,
-        removeOnComplete: true,
+        // Keep last 200 completed jobs in Redis instead of immediate deletion.
+        // This narrows the data-loss window: if the process crashes between
+        // persistState (Mongo write) and BullMQ's completion ack, the job
+        // is still recoverable from Redis for inspection.
+        removeOnComplete: { count: 200 },
         removeOnFail: false
     });
 }
