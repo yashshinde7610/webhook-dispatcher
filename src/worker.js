@@ -42,7 +42,10 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db'
     maxPoolSize: MONGO_POOL_SIZE,
 })
     .then(() => logger.info({ poolSize: MONGO_POOL_SIZE }, 'Worker connected to MongoDB'))
-    .catch(err => logger.error({ err }, 'MongoDB connection error'));
+    .catch(err => {
+        logger.fatal({ err }, 'MongoDB connection error. Worker cannot persist state.');
+        process.exit(1);
+    });
 
 // ── Job processor ────────────────────────────────────────────
 const worker = new Worker('webhook-queue', async (job) => {
