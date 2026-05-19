@@ -256,7 +256,7 @@ exports.replayEvent = async (req, res) => {
             backoff: { type: 'exponential', delay: 1000 },
             jobId: replayJobId,
             removeOnComplete: { count: 200 },
-            removeOnFail: false
+            removeOnFail: { count: 500 }
         });
 
         enqueueJobUpdate({ id: eventLog._id, status: 'Pending (Replay)', data: redactPayloadString(eventLog.payload) });
