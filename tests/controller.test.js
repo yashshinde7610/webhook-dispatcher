@@ -314,7 +314,7 @@ describe('patchEvent', () => {
         assert.strictEqual(res._body.code, 'PATCH_VALIDATION_FAILED');
     });
 
-    test('400 — updateMask = "*" produces empty field mask', async () => {
+    test('400 — updateMask = "*" produces INVALID_FIELD_MASK', async () => {
         const { req, res } = createMockReqRes(
             { url: 'https://valid.com' },
             {},
@@ -325,7 +325,7 @@ describe('patchEvent', () => {
         await controller.patchEvent(req, res);
 
         assert.strictEqual(res._statusCode, 400);
-        assert.ok(res._body.error.includes('No valid fields'));
+        assert.strictEqual(res._body.code, 'INVALID_FIELD_MASK');
     });
 
     test('status field is stripped by patchSchema (worker-owned)', async () => {
