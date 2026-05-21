@@ -1,4 +1,4 @@
-// tests/batchProcessor.test.js
+// tests/persistState.test.js
 const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const { injectMock, createMockEventModel } = require('./helpers/mocks');
@@ -7,7 +7,7 @@ const { injectMock, createMockEventModel } = require('./helpers/mocks');
 const mockEvent = createMockEventModel();
 injectMock('./src/models/Event', mockEvent);
 
-const { persistState } = require('../src/batchProcessor');
+const { persistState } = require('../src/persistState');
 
 describe('persistState', () => {
     beforeEach(() => mockEvent._reset());

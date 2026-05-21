@@ -17,8 +17,7 @@ services:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
-    logging:
-      driver: "none"
+
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 5s
@@ -32,6 +31,7 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
+      - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/webhook-db
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -49,6 +49,7 @@ services:
     build: .
     command: node src/worker.js
     environment:
+      - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/webhook-db
       - REDIS_HOST=redis
       - REDIS_PORT=6379

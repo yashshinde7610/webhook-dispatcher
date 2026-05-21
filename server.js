@@ -59,7 +59,7 @@ app.use(helmet({
         directives: {
             defaultSrc: ["'self'"],
             scriptSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            styleSrc: ["'self'", "https://fonts.googleapis.com"],
             fontSrc: ["'self'", "https://fonts.gstatic.com"],
             connectSrc: ["'self'", "ws:", "wss:"],
             imgSrc: ["'self'", "data:"]
@@ -72,28 +72,11 @@ app.use(express.json({
 }));
 app.use(express.static('public'));
 
-// ── WebSocket batching ──
-// At high throughput, emitting per-job updates would choke the event loop.
-// Buffer updates and flush as a batch instead.
-const WS_BATCH_INTERVAL_MS = Number(process.env.WS_BATCH_INTERVAL_MS) || 500;
-let jobUpdateBuffer = [];
-
-function enqueueJobUpdate(update) {
-    jobUpdateBuffer.push(update);
-}
-
-const wsBatchTimer = setInterval(() => {
-    if (jobUpdateBuffer.length === 0) return;
-    const batch = jobUpdateBuffer;
-    jobUpdateBuffer = [];
-    io.emit('job-update-batch', batch);
-}, WS_BATCH_INTERVAL_MS);
-
-// Make enqueueJobUpdate available to controllers via app.locals
-// (avoids threading callbacks through factory functions)
-app.locals.enqueueJobUpdate = enqueueJobUpdate;
-
 // ── Queue event listeners ──
+// Emit job updates directly via Socket.IO. The Redis adapter fans these
+// out to every connected dashboard client across all server replicas.
+// No local buffer needed — each server independently receives BullMQ
+// events and emits them, keeping the dashboard consistent under scale.
 const queueEvents = new QueueEvents('webhook-queue', {
     connection: {
         host: process.env.REDIS_HOST || '127.0.0.1',
@@ -110,16 +93,14 @@ queueEvents.on('completed', ({ jobId, returnvalue }) => {
         catch (e) { result = { status: 'Completed', response: returnvalue }; }
     }
 
-    let realId = jobId;
-    if (result && result.dbId) realId = result.dbId;
-
+    const realId = (result && result.dbId) ? result.dbId : jobId;
     logger.info({ jobId: realId }, 'Job completed');
-    enqueueJobUpdate({
+    io.emit('job-update-batch', [{
         id: realId,
         status: result.status || 'Completed',
         timestamp: new Date(),
         response: result.response || result
-    });
+    }]);
 });
 
 queueEvents.on('failed', async ({ jobId, failedReason }) => {
@@ -130,7 +111,7 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
     } catch (e) { logger.error({ err: e }, 'Could not fetch failed job details'); }
 
     logger.info({ jobId: realId, reason: failedReason }, 'Job failed');
-    enqueueJobUpdate({ id: realId, status: 'Failed', reason: failedReason });
+    io.emit('job-update-batch', [{ id: realId, status: 'Failed', reason: failedReason }]);
 });
 
 // ── Mount routes ──
@@ -181,7 +162,6 @@ async function gracefulShutdown(signal) {
     logger.info({ signal }, 'Graceful shutdown initiated');
 
     stopSweeper();
-    clearInterval(wsBatchTimer);
     clearInterval(dashboardStatsTimer);
 
     server.close(async (err) => {

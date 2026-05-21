@@ -11,20 +11,13 @@ const { redact, redactPayloadString } = require('../../utils/redact');
 const { applyFieldMask } = require('../../utils/fieldMask');
 const { addToQueue, myQueue } = require('../../queue');
 
-// Safe accessor for the WebSocket broadcast function injected by server.js
-// via app.locals. Returns a no-op if not set (e.g. in test contexts).
-const noop = () => {};
-function getEnqueueFn(req) {
-    return req.app?.locals?.enqueueJobUpdate || noop;
-}
-
 // Validation schemas
 const eventSchema = Joi.object({
     url: Joi.string().uri({ scheme: ['http', 'https'] }).required()
         .messages({ 'string.uri': 'url must be a valid HTTP/HTTPS URL' }),
     payload: Joi.object().required()
         .messages({ 'any.required': 'payload is required and must be a JSON object' })
-}).options({ allowUnknown: true });
+}).options({ stripUnknown: true });
 
 // PATCH schema — status and failureType are intentionally excluded.
 // These fields are owned by the worker lifecycle; letting external callers
@@ -40,7 +33,6 @@ const patchSchema = Joi.object({
 // Idempotency is enforced via a unique sparse MongoDB index on
 // idempotencyKey — E11000 on collision gives atomic dedup.
 exports.ingestEvent = async (req, res) => {
-    const enqueueJobUpdate = getEnqueueFn(req);
     const traceId = crypto.randomUUID();
 
     if (redis.status !== 'ready') {
@@ -129,7 +121,6 @@ exports.ingestEvent = async (req, res) => {
                 deliverySemantics: existing.deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
             });
 
-            enqueueJobUpdate({ id: existing._id, status: 'Pending (Force Retry)', data: redactPayloadString(existing.payload), traceId });
             return res.status(202).json({
                 status: 'accepted',
                 message: 'Force retry queued',
@@ -166,8 +157,6 @@ exports.ingestEvent = async (req, res) => {
             deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
         });
 
-        enqueueJobUpdate({ id: generatedDbId, status: 'Pending', data: redact(jobData), traceId });
-
         res.status(202).json({
             status: 'accepted',
             message: 'Job pushed to queue',
@@ -201,7 +190,6 @@ exports.ingestEvent = async (req, res) => {
 
 // ── Replay (POST /api/events/:id/replay) ──
 exports.replayEvent = async (req, res) => {
-    const enqueueJobUpdate = getEnqueueFn(req);
 
     try {
         if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -259,8 +247,6 @@ exports.replayEvent = async (req, res) => {
             removeOnFail: { count: 500 }
         });
 
-        enqueueJobUpdate({ id: eventLog._id, status: 'Pending (Replay)', data: redactPayloadString(eventLog.payload) });
-
         res.json({ message: 'Replay started', id: eventLog._id });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -269,7 +255,6 @@ exports.replayEvent = async (req, res) => {
 
 // ── Patch (PATCH /api/events/:id) ──
 exports.patchEvent = async (req, res) => {
-    const enqueueJobUpdate = getEnqueueFn(req);
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -310,12 +295,6 @@ exports.patchEvent = async (req, res) => {
         const result = await Event.updateOne({ _id: id }, { $set: safeUpdates });
 
         if (result.matchedCount === 0) return res.status(404).json({ error: 'Event not found' });
-
-        enqueueJobUpdate({
-            id: id,
-            status: 'Updated',
-            response: `Patched fields: ${Object.keys(safeUpdates).join(', ')}`
-        });
 
         res.json({ message: 'Event updated successfully', updatedFields: Object.keys(safeUpdates) });
 

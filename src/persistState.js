@@ -1,19 +1,16 @@
-// src/batchProcessor.js
+// src/persistState.js
 //
-// Direct MongoDB writes for job state transitions.
-//
-// We used to buffer writes in memory and flush periodically, but that
-// caused data loss on crash and split-brain issues with multiple workers.
-// Now every state change is an awaited atomic write — if Mongo is down,
+// Persists a job state transition directly to MongoDB.
+// Every state change is an awaited atomic write — if Mongo is down,
 // the error propagates to BullMQ which retries the whole job.
+//
+// We skip the PROCESSING intermediate status — BullMQ already tracks
+// in-flight state in Redis, so writing only on final resolution cuts
+// per-job Mongo writes from 3-4 down to 1.
 //
 const Event = require('./models/Event');
 const { safeHttpStatus } = require('./utils/workerUtils');
 
-/**
- * Persist a job state transition directly to MongoDB.
- * Failures bubble up to BullMQ which handles retries.
- */
 async function persistState(data) {
     if (!data.dbId) return;
 
@@ -63,8 +60,4 @@ async function persistState(data) {
     await Event.updateOne({ _id: data.dbId }, update, options);
 }
 
-module.exports = {
-    persistState,
-    addToBatch: persistState, // backward compat
-    shutdownBatchProcessor: async () => { /* no-op */ },
-};
+module.exports = { persistState };

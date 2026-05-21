@@ -25,7 +25,7 @@ const bullmqConnectionOptions = {
 };
 
 const { getCircuitStatus, recordFailure, recordSuccess } = require('./circuitBreaker');
-const { persistState } = require('./batchProcessor');
+const { persistState } = require('./persistState');
 const { assertNotPrivate } = require('./utils/ssrf');
 const { safeHttpStatus, createHmacSignature, classifyError } = require('./utils/workerUtils');
 
@@ -34,10 +34,12 @@ const http = require('http');
 const https = require('https');
 
 // ── MongoDB connection ───────────────────────────────────────
-// Worker default is higher than the API server (20, see src/db.js)
-// because BullMQ runs 50 concurrent jobs — each may need a Mongo
-// connection for state persistence. 55 = 50 jobs + 5 headroom.
-const MONGO_POOL_SIZE = Number(process.env.MONGO_POOL_SIZE) || 55;
+// Node.js is single-threaded. When a concurrent job awaits a network
+// response, it yields the thread and the DB connection returns to the
+// pool. 50 concurrent BullMQ jobs do NOT need 50 DB connections —
+// a pool of 10 is more than sufficient and prevents connection
+// exhaustion when scaling out to multiple worker replicas.
+const MONGO_POOL_SIZE = Number(process.env.MONGO_POOL_SIZE) || 10;
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/webhook-db', {
     maxPoolSize: MONGO_POOL_SIZE,
 })
@@ -147,7 +149,7 @@ const worker = new Worker('webhook-queue', async (job) => {
             });
         }
 
-        return response.data;
+        return { status: 'Completed', response: response.data, dbId };
 
     } catch (error) {
         // SSRF is permanent — never retry sending to a private IP
@@ -163,7 +165,7 @@ const worker = new Worker('webhook-queue', async (job) => {
                     logEntry: { attempt: currentAttempt, status: null, response: error.message }
                 });
             }
-            return { status: 'aborted', reason: 'SSRF Blocked' };
+            return { status: 'aborted', reason: 'SSRF Blocked', dbId };
         }
 
         const type = classifyError(error);
@@ -196,12 +198,12 @@ const worker = new Worker('webhook-queue', async (job) => {
 
             if (isFinalAttempt) {
                 logger.error({ traceId: tid, dbId, attempt: currentAttempt }, 'Job DEAD (max retries)');
-                return { status: 'dead', reason: 'Max Retries Reached' };
+                return { status: 'dead', reason: 'Max Retries Reached', dbId };
             }
         }
 
         if (type === 'PERMANENT') {
-            return { status: 'aborted', reason: 'Permanent Failure' };
+            return { status: 'aborted', reason: 'Permanent Failure', dbId };
         }
 
         throw error; // triggers BullMQ retry
