@@ -5,11 +5,10 @@ const mongoose = require('mongoose');
 const Joi = require('joi');
 
 const Event = require('../../models/Event');
-const redis = require('../../redis');
 const logger = require('../../utils/logger');
 const { redact, redactPayloadString } = require('../../utils/redact');
 const { applyFieldMask } = require('../../utils/fieldMask');
-const { addToQueue, myQueue } = require('../../queue');
+const { myQueue } = require('../../queue');
 
 // Validation schemas
 const eventSchema = Joi.object({
@@ -30,20 +29,12 @@ const patchSchema = Joi.object({
 }).options({ stripUnknown: true });
 
 // ── Ingest (POST /api/events) ──
-// Idempotency is enforced via a unique sparse MongoDB index on
-// idempotencyKey — E11000 on collision gives atomic dedup.
+// The API layer ONLY writes to MongoDB. The outbox tailer
+// (src/services/outboxTailer.js) polls for PENDING events and
+// pushes them to BullMQ. This eliminates the dual-write problem:
+// a crash between Mongo save and Redis enqueue can never orphan a job.
 exports.ingestEvent = async (req, res) => {
     const traceId = crypto.randomUUID();
-
-    if (redis.status !== 'ready') {
-        logger.error({ traceId, redisStatus: redis.status }, 'Redis unavailable at ingestion');
-        return res.status(503).json({
-            error: 'Service Unavailable',
-            message: 'Ingestion paused due to infrastructure outage.',
-            code: 'INGESTION_PAUSED_REDIS_UNAVAILABLE',
-            traceId
-        });
-    }
 
     logger.info({ traceId }, 'Ingress: new request');
 
@@ -109,18 +100,11 @@ exports.ingestEvent = async (req, res) => {
                 });
             }
 
+            // Remove stale BullMQ job so the outbox tailer can create a fresh one
             const existingJob = await myQueue.getJob(existing._id.toString());
             if (existingJob) await existingJob.remove();
 
-            await addToQueue({
-                url: existing.url,
-                payload: existing.payload,
-                dbId: existing._id,
-                traceId: existing.traceId,
-                source: existing.source,
-                deliverySemantics: existing.deliverySemantics || 'AT_LEAST_ONCE_UNORDERED'
-            });
-
+            // The outbox tailer will pick up this PENDING event and enqueue it
             return res.status(202).json({
                 status: 'accepted',
                 message: 'Force retry queued',
@@ -148,18 +132,10 @@ exports.ingestEvent = async (req, res) => {
 
         logger.info({ traceId, dbId: generatedDbId.toString() }, 'Event persisted');
 
-        await addToQueue({
-            url: jobData.url,
-            payload: payloadString,
-            dbId: generatedDbId,
-            traceId,
-            source: 'API_KEY_USER',
-            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
-        });
-
+        // The outbox tailer will pick up this PENDING event and enqueue it
         res.status(202).json({
             status: 'accepted',
-            message: 'Job pushed to queue',
+            message: 'Event accepted',
             id: generatedDbId,
             traceId
         });
@@ -219,10 +195,8 @@ exports.replayEvent = async (req, res) => {
             }
         });
 
+        // Remove old BullMQ job so the outbox tailer can create a fresh one
         const jobId = eventLog._id.toString();
-
-        // Try to remove the old BullMQ job — for DEAD events it's already
-        // gone, for FAILED events it might still be managed by BullMQ
         const existingJob = await myQueue.getJob(jobId);
         if (existingJob) {
             try { await existingJob.remove(); } catch (_) {
@@ -230,23 +204,7 @@ exports.replayEvent = async (req, res) => {
             }
         }
 
-        // Use a unique replay job ID to avoid "job already exists" conflicts
-        const replayJobId = existingJob ? `${jobId}-replay-${Date.now()}` : jobId;
-
-        await myQueue.add('webhook-job', {
-            url: eventLog.url,
-            payload: typeof eventLog.payload === 'object' ? JSON.stringify(eventLog.payload) : eventLog.payload,
-            dbId: eventLog._id,
-            traceId: eventLog.traceId,
-            deliverySemantics: eventLog.deliverySemantics
-        }, {
-            attempts: 5,
-            backoff: { type: 'exponential', delay: 1000 },
-            jobId: replayJobId,
-            removeOnComplete: { count: 200 },
-            removeOnFail: { count: 500 }
-        });
-
+        // The outbox tailer will pick up this PENDING event and enqueue it
         res.json({ message: 'Replay started', id: eventLog._id });
     } catch (error) {
         res.status(500).json({ error: error.message });

@@ -45,7 +45,7 @@ describe('ingestEvent', () => {
         mockRedis.status = 'ready';
     });
 
-    test('202 happy path — creates event and queues job', async () => {
+    test('202 happy path — event saved to MongoDB (outbox tailer enqueues)', async () => {
         const { req, res } = createMockReqRes(
             { url: 'https://example.com/hook', payload: { data: 1 } }
         );
@@ -54,20 +54,11 @@ describe('ingestEvent', () => {
 
         assert.strictEqual(res._statusCode, 202);
         assert.strictEqual(res._body.status, 'accepted');
+        assert.strictEqual(res._body.message, 'Event accepted');
         assert.ok(res._body.id, 'should return event ID');
         assert.ok(res._body.traceId, 'should return traceId');
-    });
-
-    test('202 happy path — addToQueue is called with deliverySemantics', async () => {
-        const { req, res } = createMockReqRes(
-            { url: 'https://example.com/hook', payload: { data: 1 } }
-        );
-
-        await controller.ingestEvent(req, res);
-
-        assert.strictEqual(addToQueueSpy._calls.length, 1);
-        const queueData = addToQueueSpy._calls[0];
-        assert.strictEqual(queueData.deliverySemantics, 'AT_LEAST_ONCE_UNORDERED');
+        // addToQueue should NOT be called — outbox tailer handles enqueuing
+        assert.strictEqual(addToQueueSpy._calls.length, 0);
     });
 
     test('400 — missing url fails validation', async () => {
@@ -90,18 +81,6 @@ describe('ingestEvent', () => {
 
         assert.strictEqual(res._statusCode, 400);
         assert.strictEqual(res._body.code, 'VALIDATION_FAILED');
-    });
-
-    test('503 — Redis down pauses ingestion', async () => {
-        mockRedis.status = 'connecting';
-        const { req, res } = createMockReqRes(
-            { url: 'https://example.com/hook', payload: { data: 1 } }
-        );
-
-        await controller.ingestEvent(req, res);
-
-        assert.strictEqual(res._statusCode, 503);
-        assert.strictEqual(res._body.code, 'INGESTION_PAUSED_REDIS_UNAVAILABLE');
     });
 
     test('409 — E11000 idempotency collision', async () => {
@@ -168,7 +147,8 @@ describe('ingestEvent — force retry', () => {
 
         assert.strictEqual(res._statusCode, 202);
         assert.strictEqual(res._body.message, 'Force retry queued');
-        assert.strictEqual(addToQueueSpy._calls.length, 1);
+        // addToQueue should NOT be called — outbox tailer handles enqueuing
+        assert.strictEqual(addToQueueSpy._calls.length, 0);
     });
 
     test('409 — event is already PENDING (conflict)', async () => {
@@ -228,8 +208,8 @@ describe('replayEvent', () => {
 
         assert.strictEqual(res._statusCode, 200);
         assert.strictEqual(res._body.message, 'Replay started');
-        // Replay uses myQueue.add() directly, not addToQueue()
-        assert.strictEqual(mockQueue._addCalls.length, 1);
+        // Controller no longer calls myQueue.add() — outbox tailer handles enqueuing
+        assert.strictEqual(mockQueue._addCalls.length, 0);
     });
 
     test('400 — invalid ObjectId', async () => {

@@ -22,7 +22,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { myQueue } = require('./src/queue');
 const { QueueEvents } = require('bullmq');
-const { startSweeper, stopSweeper } = require('./src/services/zombieSweeper');
+const { startTailer, stopTailer } = require('./src/services/outboxTailer');
 const { validateApiKey, safeCompare } = require('./src/api/middleware');
 const eventRoutes = require('./src/api/routes/eventRoutes');
 const connectDB = require('./src/db');
@@ -148,7 +148,7 @@ const PORT = process.env.PORT || 3000;
             rateLimitRpm: Number(process.env.RATE_LIMIT_RPM) || 1000,
         }, 'Webhook API server ONLINE');
 
-        startSweeper();
+        startTailer();
     });
 })();
 
@@ -161,7 +161,7 @@ async function gracefulShutdown(signal) {
     shutdownInProgress = true;
     logger.info({ signal }, 'Graceful shutdown initiated');
 
-    stopSweeper();
+    stopTailer();
     clearInterval(dashboardStatsTimer);
 
     server.close(async (err) => {

@@ -1,6 +1,6 @@
-// tests/zombieSweeper.test.js
+// tests/outboxTailer.test.js
 //
-// CRITICAL: Test sweepZombies directly. Never call startSweeper —
+// CRITICAL: Test pollOutbox directly. Never call startTailer —
 // setInterval will prevent the test process from exiting.
 //
 const { test, describe, beforeEach } = require('node:test');
@@ -24,9 +24,9 @@ injectMock('./src/models/Event', mockEvent);
 injectMock('./src/queue', { addToQueue: addToQueueSpy, myQueue: {} });
 injectMock('./src/utils/logger', mockLogger);
 
-const { sweepZombies } = require('../src/services/zombieSweeper');
+const { pollOutbox } = require('../src/services/outboxTailer');
 
-describe('sweepZombies', () => {
+describe('pollOutbox', () => {
     beforeEach(() => {
         mockEvent._reset();
         addToQueueSpy._reset();
@@ -34,39 +34,39 @@ describe('sweepZombies', () => {
         mockRedis.set = async () => 'OK';
     });
 
-    test('acquires lock, finds stale events, and re-queues them', async () => {
+    test('acquires lock, finds PENDING events, and enqueues them', async () => {
         mockEvent._findResult = [
             {
-                _id: 'zombie-1',
+                _id: 'event-1',
                 url: 'https://example.com/hook',
                 payload: '{"data":1}',
-                traceId: 'trace-z1',
+                traceId: 'trace-1',
                 source: 'API',
                 deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
             },
             {
-                _id: 'zombie-2',
+                _id: 'event-2',
                 url: 'https://example.com/hook2',
                 payload: '{"data":2}',
-                traceId: 'trace-z2',
+                traceId: 'trace-2',
                 source: 'API',
             },
         ];
 
-        await sweepZombies();
+        await pollOutbox();
 
-        // Both zombies should be re-queued
+        // Both events should be enqueued
         assert.strictEqual(addToQueueSpy._calls.length, 2);
-        assert.strictEqual(addToQueueSpy._calls[0].dbId, 'zombie-1');
-        assert.strictEqual(addToQueueSpy._calls[1].dbId, 'zombie-2');
+        assert.strictEqual(addToQueueSpy._calls[0].dbId, 'event-1');
+        assert.strictEqual(addToQueueSpy._calls[1].dbId, 'event-2');
     });
 
-    test('skips when lock is already held (another instance sweeping)', async () => {
+    test('skips when lock is already held (another instance tailing)', async () => {
         mockRedis.set = async () => null; // NX fails — lock held
 
         mockEvent._findResult = [{ _id: 'should-not-be-queued' }];
 
-        await sweepZombies();
+        await pollOutbox();
 
         // Should not query DB or enqueue anything
         assert.strictEqual(addToQueueSpy._calls.length, 0);
@@ -75,7 +75,7 @@ describe('sweepZombies', () => {
     test('handles "Job already exists" error gracefully', async () => {
         mockEvent._findResult = [
             {
-                _id: 'dup-zombie',
+                _id: 'dup-event',
                 url: 'https://example.com/hook',
                 payload: '{"x":1}',
                 traceId: 'trace-dup',
@@ -92,7 +92,7 @@ describe('sweepZombies', () => {
         queueModule.exports.addToQueue = throwingAdd;
 
         // Should not throw — error is swallowed
-        await assert.doesNotReject(() => sweepZombies());
+        await assert.doesNotReject(() => pollOutbox());
 
         // Restore
         queueModule.exports.addToQueue = addToQueueSpy;
@@ -101,7 +101,7 @@ describe('sweepZombies', () => {
     test('empty result set — no addToQueue calls', async () => {
         mockEvent._findResult = [];
 
-        await sweepZombies();
+        await pollOutbox();
 
         assert.strictEqual(addToQueueSpy._calls.length, 0);
     });
@@ -117,7 +117,7 @@ describe('sweepZombies', () => {
             },
         ];
 
-        await sweepZombies();
+        await pollOutbox();
 
         assert.strictEqual(addToQueueSpy._calls.length, 1);
         assert.strictEqual(
