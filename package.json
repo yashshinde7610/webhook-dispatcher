@@ -7,7 +7,7 @@
     "test": "c8 node --test tests/*.test.js",
     "test:full": "c8 node tests/fullTest.js",
     "test:unit": "c8 node tests/fullTest.js --unit-only",
-    "test:e2e": "c8 node tests/fullTest.js --e2e-only"
+    "test:e2e": "node tests/fullTest.js --e2e-only"
   },
   "keywords": [],
   "author": "Yash Shinde",

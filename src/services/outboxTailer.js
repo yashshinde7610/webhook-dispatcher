@@ -90,6 +90,13 @@ async function pollOutbox() {
         }
     } catch (err) {
         logger.error({ err }, 'Outbox poll failed');
+    } finally {
+        // Release the lock so the next cycle can run exactly on interval
+        try {
+            if (await redis.get(LOCK_KEY) === LOCK_OWNER) {
+                await redis.del(LOCK_KEY);
+            }
+        } catch (_) {}
     }
 }
 
