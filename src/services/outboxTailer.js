@@ -57,18 +57,28 @@ async function pollOutbox() {
 
         logger.info({ count: pending.length }, 'Outbox: enqueuing PENDING events');
 
-        for (const event of pending) {
-            try {
-                await addToQueue({
+        // Enqueue in parallel — sequential await per event was 10-50x slower
+        // (50 events × ~5ms = 250ms sequential vs ~5ms parallel)
+        const results = await Promise.allSettled(
+            pending.map(event =>
+                addToQueue({
                     url: event.url,
                     payload: event.payload,
                     dbId: event._id,
                     traceId: event.traceId,
                     source: event.source || 'OUTBOX',
                     deliverySemantics: event.deliverySemantics || 'AT_LEAST_ONCE_UNORDERED',
-                });
+                })
+            )
+        );
+
+        for (let i = 0; i < results.length; i++) {
+            const r = results[i];
+            const event = pending[i];
+            if (r.status === 'fulfilled') {
                 logger.debug({ traceId: event.traceId, id: event._id }, 'Outbox: event enqueued');
-            } catch (err) {
+            } else {
+                const err = r.reason;
                 // "Job already exists" means the event was already enqueued
                 // by a previous poll cycle — safe to skip
                 if (err.message && err.message.includes('Job already exists')) {

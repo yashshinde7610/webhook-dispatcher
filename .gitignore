@@ -4,5 +4,6 @@ node_modules/
 npm-debug.log
 docker-data/
 coverage/
+scratch/
 *.log
 .gemini/

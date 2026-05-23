@@ -114,7 +114,7 @@ describe('ingestEvent', () => {
         await controller.ingestEvent(req, res);
 
         assert.strictEqual(res._statusCode, 500);
-        assert.ok(res._body.error.includes('Disk full'));
+        assert.strictEqual(res._body.error, 'Internal Server Error');
     });
 });
 

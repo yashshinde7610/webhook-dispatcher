@@ -160,7 +160,7 @@ exports.ingestEvent = async (req, res) => {
         }
 
         logger.error({ traceId, err: error.message }, 'Ingestion error');
-        res.status(500).json({ error: error.message, traceId });
+        res.status(500).json({ error: 'Internal Server Error', traceId });
     }
 };
 
@@ -207,7 +207,8 @@ exports.replayEvent = async (req, res) => {
         // The outbox tailer will pick up this PENDING event and enqueue it
         res.json({ message: 'Replay started', id: eventLog._id });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        logger.error({ err: error.message, id: req.params.id }, 'Replay error');
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 };
 
@@ -264,7 +265,8 @@ exports.patchEvent = async (req, res) => {
                 code: error.code
             });
         }
-        res.status(500).json({ error: error.message });
+        logger.error({ err: error.message, id }, 'Patch error');
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 };
 
@@ -291,7 +293,8 @@ exports.getEvents = async (req, res) => {
             pagination: { page, limit, total, pages: Math.ceil(total / limit) }
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        logger.error({ err: error.message }, 'List events error');
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 };
 
@@ -310,7 +313,8 @@ exports.getEventById = async (req, res) => {
             payload: event.payload ? redactPayloadString(event.payload) : null
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        logger.error({ err: error.message, id: req.params.id }, 'Get event error');
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 };
 
@@ -335,6 +339,7 @@ exports.deleteEvent = async (req, res) => {
 
         res.json({ message: 'Event deleted', id: req.params.id });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        logger.error({ err: error.message, id: req.params.id }, 'Delete event error');
+        res.status(500).json({ error: 'Internal Server Error' });
     }
 };

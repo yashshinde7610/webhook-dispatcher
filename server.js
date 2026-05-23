@@ -32,6 +32,11 @@ const { redactPayloadString } = require('./src/utils/redact');
 const app = express();
 const server = http.createServer(app);
 
+// Behind Nginx / K8s Ingress / ELB, all requests appear from the
+// proxy's IP. Without trust proxy, express-rate-limit keys every
+// client to the same bucket, breaking rate limiting entirely.
+app.set('trust proxy', 1);
+
 // ── Socket.IO: restrict CORS in production ──
 const io = new Server(server, {
     cors: {
@@ -112,6 +117,22 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
 
     logger.info({ jobId: realId, reason: failedReason }, 'Job failed');
     io.emit('job-update-batch', [{ id: realId, status: 'Failed', reason: failedReason }]);
+});
+
+// ── Health check ──
+// Required for Kubernetes readiness/liveness probes, Docker
+// HEALTHCHECK, and load balancer health monitoring.
+app.get('/health', async (_req, res) => {
+    const mongoOk = mongoose.connection.readyState === 1;
+    const redisOk = redis.status === 'ready';
+    const healthy = mongoOk && redisOk;
+
+    res.status(healthy ? 200 : 503).json({
+        status: healthy ? 'ok' : 'degraded',
+        mongo: mongoOk ? 'connected' : 'disconnected',
+        redis: redisOk ? 'connected' : redis.status,
+        uptime: Math.floor(process.uptime()),
+    });
 });
 
 // ── Mount routes ──

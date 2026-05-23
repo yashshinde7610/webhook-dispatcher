@@ -3,7 +3,8 @@ const mongoose = require('mongoose');
 const logger = require('./utils/logger');
 
 // API server pool — lower concurrency needs than the worker.
-// Worker uses 55 (see src/worker.js) to match its 50 concurrent BullMQ jobs.
+// Worker defaults to 10 (see src/worker.js). Node.js is single-threaded,
+// so even 50 concurrent BullMQ jobs don't need 50 DB connections.
 const MONGO_POOL_SIZE = Number(process.env.MONGO_POOL_SIZE) || 20;
 
 const connectDB = async () => {
