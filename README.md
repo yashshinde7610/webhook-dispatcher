@@ -71,7 +71,7 @@ Webhook Dispatcher solves a core infrastructure challenge: **reliably delivering
 
 ### API Design
 - **RESTful Endpoints** — Standard CRUD + replay with proper HTTP semantics (202 Accepted for async operations)
-- **Google-Style Field Masks** — `PATCH` updates only explicitly specified fields via `?updateMask=url,payload`
+- **Safe Partial Updates** — `PATCH` updates only schema-allowed mutable fields (`url`, `payload`, `lastError`)
 - **Redis-Backed Rate Limiting** — Shared counters across replicas (configurable RPM per IP)
 - **Pagination** — Cursor-based with `page`, `limit`, `total`, `pages` metadata
 - **Trace IDs** — Every request gets a UUID for end-to-end correlation across logs
@@ -166,7 +166,7 @@ webhook-dispatcher/
 │   ├── api/
 │   │   ├── middleware.js        # API key auth (constant-time), rate limiting
 │   │   ├── controllers/
-│   │   │   └── eventController.js  # Business logic: CRUD, replay, idempotency, force-retry
+│   │   │   └── eventController.js  # Business logic: CRUD, replay, idempotency
 │   │   └── routes/
 │   │       └── eventRoutes.js   # Route definitions and Joi validation schemas
 │   ├── models/
@@ -177,7 +177,6 @@ webhook-dispatcher/
 │       ├── ssrf.js              # SSRF protection: IP validation, DNS resolution, range checks
 │       ├── logger.js            # Pino async logger with built-in PII redaction paths
 │       ├── redact.js            # Deep-clone redaction with depth limiting for dashboard/logs
-│       ├── fieldMask.js         # Google-style field mask for safe PATCH operations
 │       └── workerUtils.js       # HMAC signing, error classification, HTTP status sanitization
 ├── public/
 │   ├── index.html               # Dashboard HTML structure
@@ -194,7 +193,6 @@ webhook-dispatcher/
 │   ├── batchProcessor.test.js   # Batch processor tests (state persistence, error paths)
 │   ├── redact.test.js           # PII redaction tests (recursive, depth-limited)
 │   ├── circuitBreaker.test.js   # Circuit breaker state transition tests
-│   ├── fieldMask.test.js        # Field mask sanitization tests
 │   ├── worker.test.js           # Worker utility tests (HMAC, error classification)
 │   └── fullTest.js              # Comprehensive suite: 50 unit + 35 E2E tests
 ├── .github/workflows/
@@ -304,7 +302,7 @@ All endpoints require the `x-api-key` header (except `GET /` which serves the da
 | `POST` | `/api/events` | Ingest a new webhook event | `202 Accepted` |
 | `GET` | `/api/events` | List events (paginated, filterable) | `200 OK` |
 | `GET` | `/api/events/:id` | Get event details | `200 OK` |
-| `PATCH` | `/api/events/:id` | Update event fields (field mask required) | `200 OK` |
+| `PATCH` | `/api/events/:id` | Update mutable fields (`url`, `payload`, `lastError`) | `200 OK` |
 | `DELETE` | `/api/events/:id` | Delete an event | `200 OK` |
 | `POST` | `/api/events/:id/replay` | Replay a failed/dead event | `200 OK` |
 
@@ -331,17 +329,6 @@ curl -X POST http://localhost:3000/api/events \
 }
 ```
 
-### Force Retry (Idempotent Re-delivery)
-
-```bash
-curl -X POST http://localhost:3000/api/events \
-  -H "x-api-key: YOUR_API_KEY" \
-  -H "Idempotency-Key: unique-key-123" \
-  -H "x-force-retry: true" \
-  -H "Content-Type: application/json" \
-  -d '{ "url": "https://example.com/webhook", "payload": { "updated": true } }'
-```
-
 ### List Events with Filtering
 
 ```bash
@@ -350,10 +337,10 @@ curl "http://localhost:3000/api/events?status=FAILED&page=2&limit=10" \
   -H "x-api-key: YOUR_API_KEY"
 ```
 
-### PATCH with Field Mask
+### PATCH Event
 
 ```bash
-curl -X PATCH "http://localhost:3000/api/events/EVENT_ID?updateMask=url,payload" \
+curl -X PATCH "http://localhost:3000/api/events/EVENT_ID" \
   -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{ "url": "https://new-endpoint.com/hook", "payload": { "corrected": true } }'
@@ -384,7 +371,7 @@ All errors include a `traceId` for correlation:
 | **DNS Rebinding** | DNS-pinned HTTP agents | Custom `lookup` function locks Axios to the validated IP |
 | **Timing Attacks** | `crypto.timingSafeEqual` | API key comparison always takes constant time |
 | **NoSQL Injection** | Joi validation + `stripUnknown` | Rejects `$gt`, `$set`, and other MongoDB operators |
-| **Mass Assignment** | Field mask enforcement | PATCH only updates explicitly requested fields |
+| **Mass Assignment** | Joi schema allowlist + `stripUnknown` | PATCH only updates schema-allowed mutable fields |
 | **Payload Tampering** | HMAC-SHA256 signatures | Raw-byte signing prevents serialization mismatches |
 | **XSS** | `escapeHTML()` in dashboard | All dynamic content is escaped before DOM insertion |
 | **Clickjacking** | Helmet `X-Frame-Options` | Browser refuses to embed dashboard in iframes |
@@ -429,13 +416,12 @@ All `node:test` unit tests use a centralized mock factory (`tests/helpers/mocks.
 | Module | Coverage |
 |--------|----------|
 | **SSRF** | Private IPv4/v6 ranges, public IPs, DNS hostname resolution, RFC-3849 documentation prefix, invalid inputs |
-| **Controller** | Ingest (happy path + validation), idempotency collisions, force retry, PATCH with field masks, replay, delete, get with pagination |
+| **Controller** | Ingest (happy path + validation), idempotency collisions, PATCH (schema-based updates), replay, delete, get with pagination |
 | **Middleware** | `safeCompare` (constant-time), `validateApiKey` (valid/invalid/missing), async Redis store initialization |
 | **Zombie Sweeper** | Lock acquisition, lock contention (another replica), empty PENDING set, missing-field edge cases |
 | **Batch Processor** | State persistence (COMPLETED/FAILED/DEAD), MongoDB write failures, missing event IDs |
 | **Redact** | Recursive PII scrubbing, depth limiting, array handling, immutability, non-object passthrough |
 | **Circuit Breaker** | CLOSED → OPEN → HALF_OPEN → CLOSED lifecycle |
-| **Field Mask** | Inclusion, exclusion, wildcard rejection, whitespace trimming |
 | **Worker Utils** | HMAC generation, error classification (ENOTFOUND=permanent, EAI_AGAIN=transient, HTTP status mapping) |
 
 ### CI/CD Pipeline

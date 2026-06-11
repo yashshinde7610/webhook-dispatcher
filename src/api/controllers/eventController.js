@@ -7,7 +7,6 @@ const Joi = require('joi');
 const Event = require('../../models/Event');
 const logger = require('../../utils/logger');
 const { redact, redactPayloadString } = require('../../utils/redact');
-const { applyFieldMask } = require('../../utils/fieldMask');
 const { myQueue } = require('../../queue');
 
 // Validation schemas
@@ -39,15 +38,7 @@ exports.ingestEvent = async (req, res) => {
     logger.info({ traceId }, 'Ingress: new request');
 
     const idempotencyKey = req.headers['idempotency-key'] || null;
-    const forceRetry = req.headers['x-force-retry'] === 'true';
-
-    // If forceRetry is true, url and payload are optional because we can reuse existing DB data
-    const schemaToUse = forceRetry ? Joi.object({
-        url: Joi.string().uri({ scheme: ['http', 'https'] }).messages({ 'string.uri': 'url must be a valid HTTP/HTTPS URL' }),
-        payload: Joi.object()
-    }).options({ allowUnknown: true }) : eventSchema;
-
-    const { error: validationError } = schemaToUse.validate(req.body);
+    const { error: validationError } = eventSchema.validate(req.body);
     if (validationError) {
         logger.warn({ traceId, err: validationError.message }, 'Validation failed');
         return res.status(400).json({
@@ -65,55 +56,6 @@ exports.ingestEvent = async (req, res) => {
     const payloadString = JSON.stringify(jobData.payload);
 
     try {
-        // Force retry: atomically claim the retry with a status guard
-        // so only one concurrent retry wins
-        if (idempotencyKey && forceRetry) {
-            const existing = await Event.findOneAndUpdate(
-                { idempotencyKey, status: { $ne: 'PENDING' } },
-                {
-                    $set: {
-                        status: 'PENDING',
-                        url: jobData.url || undefined,
-                        payload: jobData.payload ? JSON.stringify(jobData.payload) : undefined,
-                    },
-                    $push: {
-                        logs: {
-                            $each: [{ attempt: 0, status: 0, response: 'Force Retry', timestamp: new Date() }],
-                            $slice: -(Event.MAX_LOGS || 20)
-                        }
-                    }
-                },
-                { new: true }
-            );
-
-            if (!existing) {
-                const found = await Event.findOne({ idempotencyKey });
-                if (!found) {
-                    return res.status(404).json({ error: 'No event found for this idempotency key', traceId });
-                }
-                return res.status(409).json({
-                    error: 'Conflict',
-                    message: 'Event is already pending or a retry is in progress',
-                    existingId: found._id,
-                    existingStatus: found.status,
-                    traceId
-                });
-            }
-
-            // Remove stale BullMQ job so the outbox tailer can create a fresh one
-            const existingJob = await myQueue.getJob(existing._id.toString());
-            if (existingJob) await existingJob.remove();
-
-            // The outbox tailer will pick up this PENDING event and enqueue it
-            return res.status(202).json({
-                status: 'accepted',
-                message: 'Force retry queued',
-                id: existing._id,
-                traceId
-            });
-        }
-
-        // Normal ingestion path
         const generatedDbId = new mongoose.Types.ObjectId();
 
         const eventDoc = new Event({
@@ -220,7 +162,6 @@ exports.patchEvent = async (req, res) => {
         return res.status(400).json({ error: 'Invalid event ID format', code: 'INVALID_ID' });
     }
 
-    const updateMask = req.query.updateMask || req.headers['x-update-mask'];
     const updateData = req.body;
 
     const { error: patchValidationError, value: validatedBody } = patchSchema.validate(updateData);
@@ -232,10 +173,10 @@ exports.patchEvent = async (req, res) => {
         });
     }
 
-    logger.debug({ id, mask: updateMask, bodyKeys: Object.keys(validatedBody) }, 'PATCH request');
+    logger.debug({ id, bodyKeys: Object.keys(validatedBody) }, 'PATCH request');
 
     try {
-        const safeUpdates = applyFieldMask(validatedBody, updateMask);
+        const safeUpdates = { ...validatedBody };
 
         if (safeUpdates.payload && typeof safeUpdates.payload === 'object') {
             safeUpdates.payload = JSON.stringify(safeUpdates.payload);
@@ -243,13 +184,12 @@ exports.patchEvent = async (req, res) => {
 
         if (Object.keys(safeUpdates).length === 0) {
             return res.status(400).json({
-                error: 'No valid fields to update. Did you provide an updateMask?',
-                receivedMask: updateMask,
+                error: 'No valid fields to update.',
                 receivedBody: validatedBody
             });
         }
 
-        logger.info({ id, mask: updateMask }, 'Updating event');
+        logger.info({ id }, 'Updating event');
 
         const result = await Event.updateOne({ _id: id }, { $set: safeUpdates });
 
@@ -258,13 +198,6 @@ exports.patchEvent = async (req, res) => {
         res.json({ message: 'Event updated successfully', updatedFields: Object.keys(safeUpdates) });
 
     } catch (error) {
-        if (error.code === 'INVALID_FIELD_MASK') {
-            return res.status(400).json({
-                error: 'Bad Request',
-                message: error.message,
-                code: error.code
-            });
-        }
         logger.error({ err: error.message, id }, 'Patch error');
         res.status(500).json({ error: 'Internal Server Error' });
     }

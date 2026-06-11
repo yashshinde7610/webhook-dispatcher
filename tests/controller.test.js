@@ -118,71 +118,6 @@ describe('ingestEvent', () => {
     });
 });
 
-// ── ingestEvent force retry ──────────────────────────────────
-
-describe('ingestEvent — force retry', () => {
-    beforeEach(() => {
-        mockEvent._reset();
-        mockQueue._reset();
-        addToQueueSpy._reset();
-        mockRedis.status = 'ready';
-    });
-
-    test('202 — existing non-PENDING event is force-retried', async () => {
-        mockEvent._findOneAndUpdateResult = {
-            _id: VALID_ID,
-            url: 'https://example.com/hook',
-            payload: '{"data":1}',
-            traceId: 'trace-1',
-            source: 'API_KEY_USER',
-            deliverySemantics: 'AT_LEAST_ONCE_UNORDERED',
-        };
-
-        const { req, res } = createMockReqRes(
-            { url: 'https://example.com/hook', payload: { data: 1 } },
-            { 'idempotency-key': 'key-1', 'x-force-retry': 'true' }
-        );
-
-        await controller.ingestEvent(req, res);
-
-        assert.strictEqual(res._statusCode, 202);
-        assert.strictEqual(res._body.message, 'Force retry queued');
-        // addToQueue should NOT be called — outbox tailer handles enqueuing
-        assert.strictEqual(addToQueueSpy._calls.length, 0);
-    });
-
-    test('409 — event is already PENDING (conflict)', async () => {
-        // findOneAndUpdate returns null (status guard $ne: PENDING doesn't match)
-        mockEvent._findOneAndUpdateResult = null;
-        // findOne finds the event but it's PENDING
-        mockEvent._findOneResult = { _id: VALID_ID, status: 'PENDING' };
-
-        const { req, res } = createMockReqRes(
-            { url: 'https://example.com/hook', payload: { data: 1 } },
-            { 'idempotency-key': 'key-1', 'x-force-retry': 'true' }
-        );
-
-        await controller.ingestEvent(req, res);
-
-        assert.strictEqual(res._statusCode, 409);
-        assert.ok(res._body.message.includes('already pending'));
-    });
-
-    test('404 — no event exists for idempotency key', async () => {
-        mockEvent._findOneAndUpdateResult = null;
-        mockEvent._findOneResult = null;
-
-        const { req, res } = createMockReqRes(
-            { url: 'https://example.com/hook', payload: { data: 1 } },
-            { 'idempotency-key': 'nonexistent-key', 'x-force-retry': 'true' }
-        );
-
-        await controller.ingestEvent(req, res);
-
-        assert.strictEqual(res._statusCode, 404);
-    });
-});
-
 // ── replayEvent ──────────────────────────────────────────────
 
 describe('replayEvent', () => {
@@ -242,8 +177,7 @@ describe('patchEvent', () => {
         const { req, res } = createMockReqRes(
             { url: 'https://new-url.com/hook' },
             {},
-            { id: VALID_ID },
-            { updateMask: 'url' }
+            { id: VALID_ID }
         );
 
         await controller.patchEvent(req, res);
@@ -256,8 +190,7 @@ describe('patchEvent', () => {
         const { req, res } = createMockReqRes(
             { url: 'https://new-url.com' },
             {},
-            { id: INVALID_ID },
-            { updateMask: 'url' }
+            { id: INVALID_ID }
         );
 
         await controller.patchEvent(req, res);
@@ -271,8 +204,7 @@ describe('patchEvent', () => {
         const { req, res } = createMockReqRes(
             { url: 'https://new-url.com' },
             {},
-            { id: VALID_ID },
-            { updateMask: 'url' }
+            { id: VALID_ID }
         );
 
         await controller.patchEvent(req, res);
@@ -284,8 +216,7 @@ describe('patchEvent', () => {
         const { req, res } = createMockReqRes(
             { url: 'not-a-url' },
             {},
-            { id: VALID_ID },
-            { updateMask: 'url' }
+            { id: VALID_ID }
         );
 
         await controller.patchEvent(req, res);
@@ -294,26 +225,11 @@ describe('patchEvent', () => {
         assert.strictEqual(res._body.code, 'PATCH_VALIDATION_FAILED');
     });
 
-    test('400 — updateMask = "*" produces INVALID_FIELD_MASK', async () => {
-        const { req, res } = createMockReqRes(
-            { url: 'https://valid.com' },
-            {},
-            { id: VALID_ID },
-            { updateMask: '*' }
-        );
-
-        await controller.patchEvent(req, res);
-
-        assert.strictEqual(res._statusCode, 400);
-        assert.strictEqual(res._body.code, 'INVALID_FIELD_MASK');
-    });
-
     test('status field is stripped by patchSchema (worker-owned)', async () => {
         const { req, res } = createMockReqRes(
             { url: 'https://valid.com', status: 'COMPLETED' },
             {},
-            { id: VALID_ID },
-            { updateMask: 'url,status' }
+            { id: VALID_ID }
         );
 
         await controller.patchEvent(req, res);
@@ -323,6 +239,19 @@ describe('patchEvent', () => {
         assert.strictEqual(res._statusCode, 200);
         assert.ok(res._body.updatedFields.includes('url'));
         assert.ok(!res._body.updatedFields.includes('status'));
+    });
+
+    test('400 — body with only worker-owned fields becomes empty update', async () => {
+        const { req, res } = createMockReqRes(
+            { status: 'COMPLETED' },
+            {},
+            { id: VALID_ID }
+        );
+
+        await controller.patchEvent(req, res);
+
+        assert.strictEqual(res._statusCode, 400);
+        assert.strictEqual(res._body.error, 'No valid fields to update.');
     });
 });
 

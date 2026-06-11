@@ -99,7 +99,6 @@ function sleep(ms) {
 // Imports (pure utility modules)
 const { classifyError, safeHttpStatus, createHmacSignature } = require('../src/utils/workerUtils');
 const { redact, redactPayloadString, REDACTED }               = require('../src/utils/redact');
-const { applyFieldMask }                                       = require('../src/utils/fieldMask');
 
 
 // --- Part 1: Unit Tests (pure logic) ---
@@ -324,41 +323,7 @@ async function runUnitTests() {
         assert.strictEqual(redactPayloadString(undefined), undefined);
     });
 
-    subsection('1.6  applyFieldMask()');
-
-    await unitTest('Includes only fields listed in the mask', () => {
-        const result = applyFieldMask({ name: 'Alice', role: 'Admin', id: 1 }, 'name,role');
-        assert.deepStrictEqual(result, { name: 'Alice', role: 'Admin' });
-    });
-
-    await unitTest('Strips unlisted fields (security boundary)', () => {
-        const result = applyFieldMask({ id: 1, password: 'secret', $set: { admin: true } }, 'id');
-        assert.deepStrictEqual(result, { id: 1 });
-        assert.strictEqual(result.password, undefined);
-        assert.strictEqual(result.$set, undefined);
-    });
-
-    await unitTest('Wildcard "*" mask → throws error (fail-safe)', () => {
-        assert.throws(() => applyFieldMask({ a: 1, b: 2 }, '*'), { code: 'INVALID_FIELD_MASK' });
-    });
-
-    await unitTest('Empty / null / undefined mask → throws error', () => {
-        assert.throws(() => applyFieldMask({ a: 1 }, ''), { code: 'INVALID_FIELD_MASK' });
-        assert.throws(() => applyFieldMask({ a: 1 }, null), { code: 'INVALID_FIELD_MASK' });
-        assert.throws(() => applyFieldMask({ a: 1 }, undefined), { code: 'INVALID_FIELD_MASK' });
-    });
-
-    await unitTest('Mask field not present in data → ignored safely', () => {
-        const result = applyFieldMask({ a: 1 }, 'a,b,c');
-        assert.deepStrictEqual(result, { a: 1 });
-    });
-
-    await unitTest('Trims whitespace from mask fields', () => {
-        const result = applyFieldMask({ status: 'OK', url: 'http://x.com' }, ' status , url ');
-        assert.deepStrictEqual(result, { status: 'OK', url: 'http://x.com' });
-    });
-
-    subsection('1.7  Circuit Breaker (mocked Redis)');
+    subsection('1.6  Circuit Breaker (mocked Redis)');
 
     // Build an in-process Redis mock
     const mockRedis = {
@@ -680,28 +645,28 @@ async function runE2ETests() {
         info(`Collision detected — existing: ${res.data.existingId} (${res.data.existingStatus})`);
     });
 
-    subsection('2.7  PATCH with field mask');
+    subsection('2.7  PATCH');
 
     if (primaryEventId) {
-        await e2eTest('PATCH without updateMask → 400 (no valid fields)', async () => {
+        await e2eTest('PATCH with worker-owned field only → 400 (no valid fields)', async () => {
             const res = await api.patch(`/api/events/${primaryEventId}`, {
                 status: 'FAILED'
             });
             assert.strictEqual(res.status, 400);
         });
 
-        await e2eTest('PATCH with updateMask=payload → 200 (updates payload)', async () => {
+        await e2eTest('PATCH payload → 200 (updates payload)', async () => {
             const res = await api.patch(
-                `/api/events/${primaryEventId}?updateMask=payload`,
+                `/api/events/${primaryEventId}`,
                 { payload: { updated: true } }
             );
             assert.strictEqual(res.status, 200);
             assert.ok(res.data.updatedFields.includes('payload'));
         });
 
-        await e2eTest('PATCH with updateMask=url → 200 (updates url)', async () => {
+        await e2eTest('PATCH url → 200 (updates url)', async () => {
             const res = await api.patch(
-                `/api/events/${primaryEventId}?updateMask=url`,
+                `/api/events/${primaryEventId}`,
                 { url: 'http://updated.example.com' }
             );
             assert.strictEqual(res.status, 200);
@@ -710,7 +675,7 @@ async function runE2ETests() {
 
         await e2eTest('PATCH unknown fields stripped by Joi (NoSQL injection guard)', async () => {
             const res = await api.patch(
-                `/api/events/${primaryEventId}?updateMask=url`,
+                `/api/events/${primaryEventId}`,
                 { url: 'http://updated.example.com', $set: { admin: true }, __proto__: { evil: true } }
             );
             // Joi strips unknown fields, so the PATCH should still succeed
@@ -722,7 +687,7 @@ async function runE2ETests() {
 
         await e2eTest('PATCH nonexistent event → 404', async () => {
             const res = await api.patch(
-                '/api/events/000000000000000000000000?updateMask=url',
+                '/api/events/000000000000000000000000',
                 { url: 'http://updated.example.com' }
             );
             assert.strictEqual(res.status, 404);
@@ -812,47 +777,7 @@ async function runE2ETests() {
         if (res.status === 202) createdIds.push(res.data.id);
     });
 
-    subsection('2.12  Force retry');
-
-    const retryKey = `test-retry-${crypto.randomBytes(4).toString('hex')}`;
-
-    // Create an event with an idempotency key
-    const createRes = await api.post('/api/events', {
-        url: WEBHOOK_TARGET,
-        payload: { retry_test: true }
-    }, {
-        headers: { 'idempotency-key': retryKey, 'x-api-key': API_KEY }
-    });
-
-    if (createRes.status === 202) {
-        createdIds.push(createRes.data.id);
-
-        // Wait for it to leave PENDING
-        await sleep(3000);
-
-        await e2eTest('Force retry with x-force-retry: true → 202 Accepted', async () => {
-            const res = await api.post('/api/events', {
-                url: WEBHOOK_TARGET,
-                payload: { retry_test: true, attempt: 2 }
-            }, {
-                headers: {
-                    'idempotency-key': retryKey,
-                    'x-force-retry': 'true',
-                    'x-api-key': API_KEY
-                }
-            });
-            // 202 if the event was found and status wasn't PENDING
-            // 409 if it's still PENDING (race condition)
-            // 404 if idempotency key not found (shouldn't happen)
-            assert.ok(
-                [202, 409].includes(res.status),
-                `Expected 202 or 409, got ${res.status}: ${JSON.stringify(res.data)}`
-            );
-            info(`Force retry response: ${res.status} — ${res.data.message || res.data.error}`);
-        });
-    }
-
-    subsection('2.13  DELETE route');
+    subsection('2.12  DELETE route');
 
     // Create a throwaway event to delete
     const delRes = await api.post('/api/events', {
